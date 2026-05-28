@@ -1,0 +1,8 @@
+bin/
+obj/
+data/
+appsettings.Local.json
+*.user
+*.suo
+*.nupkg
+
