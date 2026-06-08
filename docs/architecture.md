@@ -21,27 +21,36 @@ flowchart LR
         Mem[ConversationMemory]
         Reg[ToolRegistry]
         T1[KnowledgeSearchTool]
-        T2[AddNoteTool]
-        T3[ListNotesTool]
-        T4[CalculatorTool]
-        T5[MakeQuizTool]
+        T2[ReadCourseMaterialTool]
+        T3[ImportCourseMaterialsTool]
+        T4[AddNoteTool]
+        T5[ListNotesTool]
+        T6[UpdateLearningProfileTool]
+        T7[ShowLearningProfileTool]
+        T8[StudyPlanTool]
+        T9[CalculatorTool]
+        T10[MakeQuizTool]
         LLM[OpenAiLlmClient]
         Emb[IEmbeddingClient\nLocalHash / Zhipu]
         VS[InMemoryVectorStore]
         Idx[KnowledgeIndexer]
+        Importer[CourseMaterialImporter]
         TraceI[IAgentTracer]
         FileT[JsonlFileTracer]
     end
     subgraph MCP["SmartStudy.Mcp (MCP Server)"]
         McpHost[Stdio Host]
         NoteMcp[NoteMcpTools]
+        KnowledgeMcp[KnowledgeMcpTools]
     end
     subgraph External["外部"]
         ZhipuLLM[(智谱 GLM \n /chat/completions)]
         ZhipuEmb[(可选：智谱 embedding-3)]
         LocalEmb[(本地 Hash Embedding)]
         KB[(knowledge/*.md)]
+        Imported[(knowledge/imported/*.md)]
         Notes[(data/notes.json)]
+        Profile[(data/learning-profile.json)]
         TraceFile[(data/trace-*.jsonl)]
     end
 
@@ -49,21 +58,28 @@ flowchart LR
     DI --> Agent
     Agent --> Mem
     Agent --> Reg
-    Reg --> T1 & T2 & T3 & T4 & T5
+    Reg --> T1 & T2 & T3 & T4 & T5 & T6 & T7 & T8 & T9 & T10
     Agent --> LLM --> ZhipuLLM
     T1 --> Emb
     Emb --> ZhipuEmb
     Emb --> LocalEmb
     T1 --> VS
+    T2 --> Imported
+    T3 --> Importer --> Imported
     Idx --> Emb
     Idx --> KB
+    Idx --> Imported
     Idx --> VS
-    T2 & T3 --> Notes
-    T5 --> LLM
+    T4 & T5 --> Notes
+    T6 & T7 & T8 --> Profile
+    T8 --> T1
+    T10 --> LLM
     Agent --> TraceI
     TraceI -.-> Tracer1
     TraceI -.-> FileT --> TraceFile
     McpHost --> NoteMcp --> Notes
+    McpHost --> KnowledgeMcp --> VS
+    KnowledgeMcp --> Imported
 ```
 
 ## 2. ReAct 推理流程
@@ -159,10 +175,15 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | Name               | 描述                            | 调用时机                | 关键文件                       |
 | ------------------ | ----------------------------- | ------------------- | -------------------------- |
 | `knowledge_search` | RAG 检索课程资料                    | 回答事实性问题之前           | `KnowledgeSearchTool.cs`   |
+| `read_course_material` | 读取已导入课件的连续页面或整份内容       | 用户点名某个 PDF/PPT/课件并要求讲解 | `ReadCourseMaterialTool.cs` |
+| `import_course_materials` | 导入本地 PDF/PPTX/DOCX/TXT/MD 资料并重建索引 | 用户提供本地资料目录 | `ImportCourseMaterialsTool.cs` |
 | `add_note`         | 把要点持久化为 JSON 笔记               | 用户说"记一下""保存"        | `NoteTools.cs`             |
 | `list_notes`       | 按标签 / 关键字查询笔记                 | 用户问"我之前记了什么"        | `NoteTools.cs`             |
+| `update_learning_profile` | 更新长期学习画像中的薄弱项、优势项、目标和偏好 | 用户表达不会什么、想准备什么、偏好怎么学 | `LearningProfileTools.cs` |
+| `show_learning_profile` | 查看当前长期学习画像 | 用户问"我的学习画像/薄弱点是什么" | `LearningProfileTools.cs` |
+| `study_plan` | 根据学习画像和课程资料生成短期复习计划 | 用户要求复习计划、备考路线、学习安排 | `LearningProfileTools.cs` |
 | `calculate`        | 安全表达式求值（`DataTable.Compute`） | 学习时长 / 复习天数等计算      | `CalculatorTool.cs`        |
-| `make_quiz`        | 二次调用 LLM 生成结构化练习题             | 用户说"出几道题""帮我复习"     | `MakeQuizTool.cs`          |
+| `make_quiz`        | 二次调用 LLM 生成结构化练习题，并做 JSON 校验与修复 | 用户说"出几道题""帮我复习"     | `MakeQuizTool.cs`          |
 
 ## 5. 失败模式与防御
 
@@ -172,5 +193,7 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | 工具自身抛异常        | `try/catch` 把异常文本作为 observation，循环继续                                  |
 | 死循环 / 无意义反复调工具 | `MaxLoopSteps` 硬上限 + `AgentResult.ReachedLimit` 标志                       |
 | 上下文过长          | `ConversationMemory` 滑动窗口保留最近 N 条非 system 消息                          |
+| 练习题 JSON 不合法   | `MakeQuizTool` 提取 fenced JSON / 数组片段，校验字段，失败时自动请求 LLM 修复一次       |
+| 长期偏好丢失         | `JsonLearningProfileStore` 把薄弱项、优势项、目标和讲解偏好写入 `learning-profile.json` |
 | 网络瞬时失败         | `HttpClient` 由 `IHttpClientFactory` 管理，CLI 层 `try/catch` 捕获并友好提示       |
 | API Key 泄漏       | 通过 `appsettings.Local.json` 或环境变量注入；示例配置中 `ApiKey` 留空                  |

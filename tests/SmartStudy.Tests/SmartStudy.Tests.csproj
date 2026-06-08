@@ -23,6 +23,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\SmartStudy.Core\SmartStudy.Core.csproj" />
     <ProjectReference Include="..\..\src\SmartStudy.Cli\SmartStudy.Cli.csproj" />
+    <ProjectReference Include="..\..\src\SmartStudy.Mcp\SmartStudy.Mcp.csproj" />
   </ItemGroup>
 
 </Project>

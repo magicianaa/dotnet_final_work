@@ -128,6 +128,86 @@ public class CalculatorToolTests
     }
 }
 
+public class MakeQuizToolTests
+{
+    [Fact]
+    public async Task NormalizesFencedJsonQuizOutput()
+    {
+        var llm = new FakeLlmClient(new[]
+        {
+            new ChatResponse
+            {
+                Content = """
+                ```json
+                [
+                  {
+                    "question": "ReAct 的 Action 是什么？",
+                    "options": ["思考", "调用工具"],
+                    "answer": "调用工具",
+                    "explanation": "Action 阶段会调用外部工具。"
+                  }
+                ]
+                ```
+                """
+            }
+        });
+        var tool = new MakeQuizTool(llm);
+        var args = JsonDocument.Parse("""{"material":"ReAct 包含 Thought、Action、Observation。","count":1}""").RootElement;
+
+        var result = await tool.InvokeAsync(args);
+
+        using var doc = JsonDocument.Parse(result);
+        Assert.Equal(JsonValueKind.Array, doc.RootElement.ValueKind);
+        Assert.Equal("ReAct 的 Action 是什么？", doc.RootElement[0].GetProperty("question").GetString());
+    }
+
+    [Fact]
+    public async Task RepairsInvalidQuizOutputOnce()
+    {
+        var llm = new FakeLlmClient(new[]
+        {
+            new ChatResponse { Content = "这是一段解释，不是 JSON。" },
+            new ChatResponse
+            {
+                Content = """
+                [
+                  {
+                    "question": "Observation 表示什么？",
+                    "options": [],
+                    "answer": "工具返回结果",
+                    "explanation": "Agent 把工具结果写回上下文继续推理。"
+                  }
+                ]
+                """
+            }
+        });
+        var tool = new MakeQuizTool(llm);
+        var args = JsonDocument.Parse("""{"material":"Observation 是工具返回结果。","count":1}""").RootElement;
+
+        var result = await tool.InvokeAsync(args);
+
+        Assert.Equal(2, llm.Requests.Count);
+        Assert.Contains("Observation 表示什么？", result);
+    }
+
+    [Fact]
+    public async Task ReturnsReadableErrorWhenRepairFails()
+    {
+        var llm = new FakeLlmClient(new[]
+        {
+            new ChatResponse { Content = "bad" },
+            new ChatResponse { Content = """[{"question":"缺字段"}]""" }
+        });
+        var tool = new MakeQuizTool(llm);
+        var args = JsonDocument.Parse("""{"material":"任意材料","count":1}""").RootElement;
+
+        var result = await tool.InvokeAsync(args);
+
+        Assert.StartsWith("出题失败：LLM 未返回合法的练习题 JSON", result);
+        Assert.Equal(2, llm.Requests.Count);
+    }
+}
+
 public class ConversationMemoryTests
 {
     [Fact]
@@ -368,6 +448,316 @@ public class ReadCourseMaterialToolTests
             Assert.Contains("Content and objectives", result);
             Assert.Contains("Course project requirements", result);
             Assert.DoesNotContain("Title page", result);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
+public class SmartStudyDoctorTests
+{
+    [Fact]
+    public async Task DoctorReportsCoreProjectState()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-doctor-test-" + Guid.NewGuid().ToString("N"));
+        var knowledge = Path.Combine(root, "knowledge");
+        var imported = Path.Combine(knowledge, "imported");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(imported);
+        Directory.CreateDirectory(data);
+        await File.WriteAllTextAsync(Path.Combine(knowledge, "base.md"), "# Base");
+        await File.WriteAllTextAsync(Path.Combine(imported, "lesson.md"), "# Lesson");
+        await File.WriteAllTextAsync(Path.Combine(data, "notes.json"), "[]");
+
+        try
+        {
+            var store = new InMemoryVectorStore();
+            store.Replace(new[]
+            {
+                new KnowledgeChunk { Id = "c1", Source = "base.md", Text = "ReAct", Vector = new float[] { 1 } }
+            });
+            await store.SaveAsync(Path.Combine(data, "index.json"));
+
+            var options = Options.Create(new AgentOptions
+            {
+                ActiveLlmProfile = "local-test",
+                LlmProfiles = new Dictionary<string, LlmOptions>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["local-test"] = new LlmOptions
+                    {
+                        BaseUrl = "https://example.test",
+                        ApiKey = "test-key",
+                        Model = "test-model"
+                    }
+                },
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128, Model = "local-hash" },
+                Rag = new RagOptions
+                {
+                    KnowledgeDirectory = knowledge,
+                    IndexFile = Path.Combine(data, "index.json")
+                }
+            });
+            var search = new KnowledgeSearchService(new LocalHashEmbeddingClient(options), store, options);
+            var tools = new ToolRegistry(new ITool[] { new CalculatorTool(), new KnowledgeSearchTool(search), new ListNotesTool(new JsonNoteStore(Path.Combine(data, "notes.json"))) });
+            var doctor = new SmartStudyDoctor(options, new LlmProfileManager(options), store, tools);
+
+            var snapshot = await doctor.InspectAsync();
+
+            Assert.True(snapshot.IsHealthy);
+            Assert.Equal("local-test", snapshot.CurrentLlmProfile);
+            Assert.Equal("test-model", snapshot.CurrentLlmModel);
+            Assert.Equal(2, snapshot.MarkdownFileCount);
+            Assert.Equal(1, snapshot.ImportedMaterialCount);
+            Assert.Equal(1, snapshot.LoadedChunkCount);
+            Assert.Equal(3, snapshot.Tools.Count);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
+public class KnowledgeSearchServiceTests
+{
+    [Fact]
+    public async Task SearchServiceFormatsRankedResults()
+    {
+        var options = Options.Create(new AgentOptions
+        {
+            Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+            Rag = new RagOptions { TopK = 2 }
+        });
+        var embed = new LocalHashEmbeddingClient(options);
+        var store = new InMemoryVectorStore();
+        var related = "ReAct Agent 通过 Thought Action Observation 循环调用工具。";
+        var unrelated = "数据库事务关注提交和回滚。";
+        store.Replace(new[]
+        {
+            new KnowledgeChunk { Id = "r", Source = "react.md", Text = related, Vector = await embed.EmbedAsync(related) },
+            new KnowledgeChunk { Id = "d", Source = "db.md", Text = unrelated, Vector = await embed.EmbedAsync(unrelated) }
+        });
+
+        var service = new KnowledgeSearchService(embed, store, options);
+        var result = await service.SearchAsync("ReAct 如何调用工具", 1);
+
+        Assert.Contains("检索到 1 段相关内容", result);
+        Assert.Contains("react.md", result);
+        Assert.Contains("Thought Action Observation", result);
+    }
+}
+
+public class CourseMaterialCatalogTests
+{
+    [Fact]
+    public async Task ListsImportedMarkdownMaterials()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-catalog-test-" + Guid.NewGuid().ToString("N"));
+        var imported = Path.Combine(root, "knowledge", "imported");
+        Directory.CreateDirectory(imported);
+        await File.WriteAllTextAsync(Path.Combine(imported, "lesson01.md"), "# Lesson01");
+
+        try
+        {
+            var catalog = new CourseMaterialCatalog(Options.Create(new AgentOptions
+            {
+                Rag = new RagOptions { KnowledgeDirectory = Path.Combine(root, "knowledge") }
+            }));
+
+            var result = catalog.ListImportedMaterials();
+
+            Assert.Single(result);
+            Assert.Equal("lesson01.md", result[0].FileName);
+            Assert.Equal(Path.Combine("imported", "lesson01.md"), result[0].RelativePath);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
+public class KnowledgeMcpToolsTests
+{
+    [Fact]
+    public async Task MpcKnowledgeToolsSearchAndListMaterials()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-mcp-tools-test-" + Guid.NewGuid().ToString("N"));
+        var knowledge = Path.Combine(root, "knowledge");
+        var imported = Path.Combine(knowledge, "imported");
+        Directory.CreateDirectory(imported);
+        await File.WriteAllTextAsync(Path.Combine(imported, "lesson-react.md"), "# Lesson React");
+
+        try
+        {
+            var options = Options.Create(new AgentOptions
+            {
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+                Rag = new RagOptions { KnowledgeDirectory = knowledge, TopK = 2 }
+            });
+            var embed = new LocalHashEmbeddingClient(options);
+            var store = new InMemoryVectorStore();
+            var text = "ReAct Agent 会在 Action 阶段调用工具，并观察 Observation。";
+            store.Replace(new[]
+            {
+                new KnowledgeChunk { Id = "react", Source = "lesson-react.md", Text = text, Vector = await embed.EmbedAsync(text) }
+            });
+
+            var search = new KnowledgeSearchService(embed, store, options);
+            var catalog = new CourseMaterialCatalog(options);
+            var tools = new KnowledgeMcpTools(search, catalog);
+
+            var searchResult = await tools.SearchKnowledge("ReAct 工具调用", topK: 1);
+            var materials = tools.ListImportedMaterials();
+
+            Assert.Contains("lesson-react.md", searchResult);
+            Assert.Contains("Action 阶段调用工具", searchResult);
+            Assert.Contains("lesson-react.md", materials);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
+public class LearningProfileTests
+{
+    [Fact]
+    public async Task ProfileStoreMergesAndPersistsLearningProfile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-profile-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "data", "learning-profile.json");
+
+        try
+        {
+            var store = new JsonLearningProfileStore(path);
+            await store.UpdateAsync(new LearningProfileUpdate
+            {
+                WeakTopics = new() { "ReAct", "RAG" },
+                Goals = new() { "准备期末答辩" },
+                PreferredStyle = "先讲概念再举例"
+            });
+            await store.UpdateAsync(new LearningProfileUpdate
+            {
+                WeakTopics = new() { "react", "MCP" },
+                StrongTopics = new() { "C#" }
+            });
+
+            var profile = await new JsonLearningProfileStore(path).GetAsync();
+
+            Assert.Equal(new[] { "ReAct", "RAG", "MCP" }, profile.WeakTopics);
+            Assert.Contains("C#", profile.StrongTopics);
+            Assert.Contains("准备期末答辩", profile.Goals);
+            Assert.Equal("先讲概念再举例", profile.PreferredStyle);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ProfileToolsUpdateAndShowReadableSummary()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-profile-tool-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "learning-profile.json");
+
+        try
+        {
+            var store = new JsonLearningProfileStore(path);
+            var update = new UpdateLearningProfileTool(store);
+            var show = new ShowLearningProfileTool(store);
+            var args = JsonDocument.Parse("""
+            {
+              "weakTopics": ["Agent Loop"],
+              "strongTopics": ["C#"],
+              "goals": ["完成期末项目"],
+              "preferredStyle": "按项目场景解释"
+            }
+            """).RootElement;
+
+            var updateResult = await update.InvokeAsync(args);
+            var showResult = await show.InvokeAsync(JsonDocument.Parse("{}").RootElement);
+
+            Assert.Contains("学习画像已更新", updateResult);
+            Assert.Contains("Agent Loop", showResult);
+            Assert.Contains("完成期末项目", showResult);
+            Assert.Contains("按项目场景解释", showResult);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task UpdateProfileToolCompletesStrongTopicsFromLatestUserMessage()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-profile-enrich-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "learning-profile.json");
+
+        try
+        {
+            var memory = new ConversationMemory();
+            memory.AddUser("我已经掌握 calculate 和 read_course_material，但仍需要加强 make_quiz。请更新我的学习画像。");
+            var store = new JsonLearningProfileStore(path);
+            var update = new UpdateLearningProfileTool(store, memory);
+            var args = JsonDocument.Parse("""{"weakTopics":["make_quiz"]}""").RootElement;
+
+            await update.InvokeAsync(args);
+            var profile = await store.GetAsync();
+
+            Assert.Contains("calculate", profile.StrongTopics);
+            Assert.Contains("read_course_material", profile.StrongTopics);
+            Assert.Contains("make_quiz", profile.WeakTopics);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task StudyPlanUsesProfileTopicsAndKnowledgeSearchEvidence()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-study-plan-test-" + Guid.NewGuid().ToString("N"));
+        var profilePath = Path.Combine(root, "learning-profile.json");
+
+        try
+        {
+            var options = Options.Create(new AgentOptions
+            {
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+                Rag = new RagOptions { TopK = 2 }
+            });
+            var embed = new LocalHashEmbeddingClient(options);
+            var store = new InMemoryVectorStore();
+            var text = "ReAct Agent 会通过 Thought、Action、Observation 循环完成工具调用。";
+            store.Replace(new[]
+            {
+                new KnowledgeChunk { Id = "react", Source = "react.md", Text = text, Vector = await embed.EmbedAsync(text) }
+            });
+
+            var profileStore = new JsonLearningProfileStore(profilePath);
+            await profileStore.UpdateAsync(new LearningProfileUpdate
+            {
+                WeakTopics = new() { "ReAct" },
+                PreferredStyle = "按步骤讲解"
+            });
+
+            var tool = new StudyPlanTool(profileStore, new KnowledgeSearchService(embed, store, options));
+            var args = JsonDocument.Parse("""{"goal":"准备 Agent 项目答辩","days":2,"minutesPerDay":30}""").RootElement;
+
+            var result = await tool.InvokeAsync(args);
+
+            Assert.Contains("准备 Agent 项目答辩", result);
+            Assert.Contains("第 1 天", result);
+            Assert.Contains("第 2 天", result);
+            Assert.Contains("ReAct", result);
+            Assert.Contains("react.md", result);
         }
         finally
         {

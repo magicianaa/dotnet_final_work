@@ -41,6 +41,8 @@ host.Services.AddSingleton<IEmbeddingClient>(sp =>
 
 host.Services.AddSingleton<IVectorStore, InMemoryVectorStore>();
 host.Services.AddSingleton<KnowledgeIndexer>();
+host.Services.AddSingleton<KnowledgeSearchService>();
+host.Services.AddSingleton<CourseMaterialCatalog>();
 host.Services.AddSingleton<CourseMaterialImporter>();
 host.Services.AddSingleton<INoteStore>(sp =>
 {
@@ -48,18 +50,27 @@ host.Services.AddSingleton<INoteStore>(sp =>
     var notePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "notes.json");
     return new JsonNoteStore(notePath);
 });
+host.Services.AddSingleton<ILearningProfileStore>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
+    var profilePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "learning-profile.json");
+    return new JsonLearningProfileStore(profilePath);
+});
+host.Services.AddSingleton<IConversationMemory>(_ => new ConversationMemory(maxNonSystemMessages: 40));
 
-// 4 个工具
+// Agent 工具
 host.Services.AddSingleton<ITool, KnowledgeSearchTool>();
 host.Services.AddSingleton<ITool, ReadCourseMaterialTool>();
 host.Services.AddSingleton<ITool, ImportCourseMaterialsTool>();
 host.Services.AddSingleton<ITool, AddNoteTool>();
 host.Services.AddSingleton<ITool, ListNotesTool>();
+host.Services.AddSingleton<ITool, UpdateLearningProfileTool>();
+host.Services.AddSingleton<ITool, ShowLearningProfileTool>();
+host.Services.AddSingleton<ITool, StudyPlanTool>();
 host.Services.AddSingleton<ITool, CalculatorTool>();
-host.Services.AddSingleton<ITool, MakeQuizTool>();   // 第 5 个，额外加分
+host.Services.AddSingleton<ITool, MakeQuizTool>();
 host.Services.AddSingleton<ToolRegistry>();
-
-host.Services.AddSingleton<IConversationMemory>(_ => new ConversationMemory(maxNonSystemMessages: 40));
+host.Services.AddSingleton<SmartStudyDoctor>();
 
 // 追踪：Spectre 控制台 + 文件 JSONL
 host.Services.AddSingleton<IAgentTracer>(sp =>
@@ -87,6 +98,13 @@ switch (cmd)
 {
     case "index":
         await RunIndex(app.Services);
+        break;
+    case "doctor":
+    case "status":
+        await RunDoctor(app.Services);
+        break;
+    case "tools":
+        await RunTools(app.Services);
         break;
     case "reset":
         var mem = app.Services.GetRequiredService<IConversationMemory>();
@@ -191,6 +209,59 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
             AnsiConsole.WriteException(ex, ExceptionFormats.ShortenEverything);
         }
     }
+}
+
+static async Task RunDoctor(IServiceProvider sp)
+{
+    var indexer = sp.GetRequiredService<KnowledgeIndexer>();
+    await indexer.LoadIfExistsAsync();
+
+    var snapshot = await sp.GetRequiredService<SmartStudyDoctor>().InspectAsync();
+    AnsiConsole.Write(new Rule("[bold cyan]SmartStudy Doctor[/]").RuleStyle("grey"));
+
+    var summary = new Table().RoundedBorder();
+    summary.AddColumn("Item");
+    summary.AddColumn("Value");
+    summary.AddRow("Base Directory", snapshot.BaseDirectory);
+    summary.AddRow("LLM Profile", $"{snapshot.CurrentLlmProfile} ({snapshot.CurrentLlmModel})");
+    summary.AddRow("LLM BaseUrl", snapshot.CurrentLlmBaseUrl);
+    summary.AddRow("Embedding", $"{snapshot.EmbeddingProvider} ({snapshot.EmbeddingModel})");
+    summary.AddRow("Knowledge", $"{snapshot.MarkdownFileCount} markdown, {snapshot.ImportedMaterialCount} imported");
+    summary.AddRow("Index", snapshot.IndexFileExists ? $"{snapshot.LoadedChunkCount} chunks, {snapshot.IndexFileBytes} bytes" : "missing");
+    summary.AddRow("Notes", snapshot.NotesFileExists ? $"{snapshot.NoteCount} notes" : "not created");
+    summary.AddRow("Learning Profile", snapshot.LearningProfileFileExists ? "created" : "not created");
+    summary.AddRow("Tools", snapshot.Tools.Count.ToString());
+    AnsiConsole.Write(summary);
+
+    var checks = new Table().RoundedBorder();
+    checks.AddColumn("Status");
+    checks.AddColumn("Check");
+    checks.AddColumn("Value");
+    checks.AddColumn("Detail");
+    foreach (var item in snapshot.StatusItems)
+    {
+        checks.AddRow(
+            item.IsHealthy ? "[green]OK[/]" : "[red]FAIL[/]",
+            Markup.Escape(item.Name),
+            Markup.Escape(item.Value),
+            Markup.Escape(item.Detail));
+    }
+    AnsiConsole.Write(checks);
+
+    AnsiConsole.MarkupLine(snapshot.IsHealthy
+        ? "[green]Doctor 检查通过，项目具备演示条件。[/]"
+        : "[yellow]Doctor 发现需要处理的配置或索引问题，请查看 FAIL 行。[/]");
+}
+
+static async Task RunTools(IServiceProvider sp)
+{
+    var snapshot = await sp.GetRequiredService<SmartStudyDoctor>().InspectAsync();
+    var table = new Table().RoundedBorder();
+    table.AddColumn("Tool");
+    table.AddColumn("Description");
+    foreach (var tool in snapshot.Tools)
+        table.AddRow(Markup.Escape(tool.Name), Markup.Escape(tool.Description));
+    AnsiConsole.Write(table);
 }
 
 static async Task RunOneShot(IServiceProvider sp, string input, bool useStreaming)
