@@ -92,6 +92,7 @@ PDF 还鼓励实现 RAG、MCP、Streaming、可观测性和单元测试。当前
 - 更新 `docs/architecture.md`：补充 `read_course_material`、`import_course_materials`、学习画像、本地资料工作流。
 - 更新 `docs/reflection-report.md`：把工具数量、测试数量、中文输入修复、结构化 quiz 校验、学习画像和复习计划写入反思。
 - 增加 `docs/demo-script.md`：提供 10 分钟演示脚本、验收命令、备用演示路径和常见答辩问题答案。
+- 增加 `docs/team-iteration-plan.md`：提供 4 人 7 天团队分工、每日节奏、责任矩阵和最终交付清单。
 
 ## 4. 本轮执行范围
 
@@ -113,6 +114,7 @@ PDF 还鼓励实现 RAG、MCP、Streaming、可观测性和单元测试。当前
 14. 将单元测试扩展到 29 个，覆盖学习画像、画像补参兜底和复习计划工具。
 15. 新增 `docs/demo-script.md`，覆盖构建、测试、doctor、tools、RAG、课件精读、笔记、学习画像、复习计划、Streaming、MCP 和答辩 FAQ。
 16. 更新 README 和开发计划，使交付文档目录与当前源码能力一致。
+17. 新增 `docs/team-iteration-plan.md`，按照 4 人分工设计 7 天迭代节奏，突出以人分任务而不是机械按天分任务。
 
 选择这个范围的原因是：PDF 的评分中 Agent 核心功能占 30 分，技术实现质量占 20 分。前几轮已经把工具调用、RAG、MCP 和可观测性打稳，本轮加入学习画像后，Agent 从一次性问答进一步变成能长期跟踪学生薄弱项和学习目标的学习助手。
 
