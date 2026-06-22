@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using System.Text.Json;
 using SmartStudy.Cli;
 using SmartStudy.Core.Agent;
 using SmartStudy.Core.Configuration;
@@ -71,6 +72,7 @@ host.Services.AddSingleton<ITool, CalculatorTool>();
 host.Services.AddSingleton<ITool, MakeQuizTool>();
 host.Services.AddSingleton<ToolRegistry>();
 host.Services.AddSingleton<SmartStudyDoctor>();
+host.Services.AddSingleton<MultiAgentOrchestrator>();
 
 // 追踪：Spectre 控制台 + 文件 JSONL
 host.Services.AddSingleton<IAgentTracer>(sp =>
@@ -105,6 +107,16 @@ switch (cmd)
         break;
     case "tools":
         await RunTools(app.Services);
+        break;
+    case "multi":
+    case "multi-agent":
+        var goal = string.Join(' ', args.Skip(1));
+        if (string.IsNullOrWhiteSpace(goal))
+        {
+            AnsiConsole.MarkupLine("[red]用法：dotnet run -- multi \"你的协作目标\"[/]");
+            return;
+        }
+        await RunMultiAgent(app.Services, goal);
         break;
     case "reset":
         var mem = app.Services.GetRequiredService<IConversationMemory>();
@@ -161,7 +173,7 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
     var profiles = sp.GetRequiredService<LlmProfileManager>();
 
     AnsiConsole.Write(new Rule("[bold cyan]SmartStudy AI 学习助手[/]").RuleStyle("grey"));
-    AnsiConsole.MarkupLine($"[dim]输入问题与 Agent 对话；输入 :q 退出，:reset 清空记忆，:stream 切换流式，:models 查看模型，:model <name> 切换模型。当前 LLM: {Markup.Escape(profiles.CurrentName)} ({Markup.Escape(profiles.Current.Model)})[/]");
+    AnsiConsole.MarkupLine($"[dim]输入问题与 Agent 对话；常用指令：:q 退出，:stream 切换流式，:multi <目标> 多 Agent 协作，:help 显示全部冒号指令。当前 LLM: {Markup.Escape(profiles.CurrentName)} ({Markup.Escape(profiles.Current.Model)})[/]");
 
     while (true)
     {
@@ -171,6 +183,17 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
         if (input == ":reset") { sp.GetRequiredService<IConversationMemory>().Reset(); AnsiConsole.MarkupLine("[green]记忆已清空[/]"); continue; }
         if (input == ":stream") { useStreaming = !useStreaming; AnsiConsole.MarkupLine($"[green]流式输出 = {useStreaming}[/]"); continue; }
         if (input == ":models") { PrintModelProfiles(profiles); continue; }
+        if (input is ":help" or ":commands") { PrintChatCommands(); continue; }
+        if (TryReadMultiAgentCommand(input, out var multiGoal))
+        {
+            if (string.IsNullOrWhiteSpace(multiGoal))
+                AnsiConsole.MarkupLine("[yellow]用法：:multi 你的协作目标[/]");
+            else
+                await RunMultiAgent(sp, multiGoal);
+            continue;
+        }
+        if (await TryRunToolCommand(sp, input))
+            continue;
         if (input.StartsWith(":model ", StringComparison.OrdinalIgnoreCase))
         {
             var name = input[7..].Trim();
@@ -264,6 +287,44 @@ static async Task RunTools(IServiceProvider sp)
     AnsiConsole.Write(table);
 }
 
+static async Task RunMultiAgent(IServiceProvider sp, string goal)
+{
+    var indexer = sp.GetRequiredService<KnowledgeIndexer>();
+    if (await indexer.LoadIfExistsAsync())
+        AnsiConsole.MarkupLine("[dim]已加载已有知识库索引[/]");
+    else
+        AnsiConsole.MarkupLine("[yellow]提示：尚未构建知识库索引，ResearchAgent 将无法提供资料依据。运行 `dotnet run -- index` 先建索引。[/]");
+
+    var orchestrator = sp.GetRequiredService<MultiAgentOrchestrator>();
+    var result = await orchestrator.RunAsync(goal);
+
+    AnsiConsole.Write(new Rule("[bold cyan]SmartStudy Multi-Agent 协作[/]").RuleStyle("grey"));
+    AnsiConsole.MarkupLine($"[bold]目标：[/] {Markup.Escape(result.Goal)}");
+    AnsiConsole.WriteLine();
+
+    var table = new Table().RoundedBorder();
+    table.AddColumn("Agent");
+    table.AddColumn("职责");
+    table.AddColumn("状态");
+    table.AddColumn("输出摘要");
+
+    foreach (var step in result.Steps)
+    {
+        table.AddRow(
+            Markup.Escape(step.AgentName),
+            Markup.Escape(step.Responsibility),
+            step.IsSuccessful ? "[green]OK[/]" : "[yellow]WARN[/]",
+            Markup.Escape(SummarizeForTable(step.Output, 360)));
+    }
+
+    AnsiConsole.Write(table);
+    AnsiConsole.Write(new Rule(result.PassedReview ? "[green]Reviewer: PASS[/]" : "[yellow]Reviewer: NEEDS ATTENTION[/]").RuleStyle("grey"));
+    AnsiConsole.Write(new Panel(Markup.Escape(result.FinalAnswer))
+        .Header("Final Answer")
+        .RoundedBorder()
+        .BorderColor(result.PassedReview ? Color.Green : Color.Yellow));
+}
+
 static async Task RunOneShot(IServiceProvider sp, string input, bool useStreaming)
 {
     var indexer = sp.GetRequiredService<KnowledgeIndexer>();
@@ -315,6 +376,33 @@ static void PrintModelProfiles(LlmProfileManager profiles)
     AnsiConsole.Write(table);
 }
 
+static void PrintChatCommands()
+{
+    var table = new Table().RoundedBorder();
+    table.AddColumn("Command");
+    table.AddColumn("Effect");
+    AddCommandRow(table, ":q", "退出聊天");
+    AddCommandRow(table, ":help / :commands", "显示全部冒号指令");
+    AddCommandRow(table, ":reset", "清空对话记忆");
+    AddCommandRow(table, ":stream", "切换流式输出");
+    AddCommandRow(table, ":models", "查看模型列表");
+    AddCommandRow(table, ":model <name>", "切换模型");
+    AddCommandRow(table, ":multi <goal>", "启动 Multi-Agent 协作");
+    AddCommandRow(table, ":search <query>", "调用 knowledge_search");
+    AddCommandRow(table, ":read <file> [start-end]", "调用 read_course_material");
+    AddCommandRow(table, ":note <title> | <content> | <tag1,tag2>", "调用 add_note");
+    AddCommandRow(table, ":notes [tag-or-keyword]", "调用 list_notes");
+    AddCommandRow(table, ":profile", "调用 show_learning_profile");
+    AddCommandRow(table, ":plan <goal>", "调用 study_plan");
+    AddCommandRow(table, ":quiz <material> | <count>", "调用 make_quiz");
+    AddCommandRow(table, ":calc <expression>", "调用 calculate");
+    AddCommandRow(table, ":import <directory> | <glob>", "调用 import_course_materials");
+    AnsiConsole.Write(table);
+}
+
+static void AddCommandRow(Table table, string command, string effect) =>
+    table.AddRow(Markup.Escape(command), Markup.Escape(effect));
+
 static IEnumerable<string> StripOptionWithValue(IEnumerable<string> args, params string[] optionNames)
 {
     var skipNext = false;
@@ -332,4 +420,159 @@ static IEnumerable<string> StripOptionWithValue(IEnumerable<string> args, params
         }
         yield return arg;
     }
+}
+
+static string SummarizeForTable(string text, int maxChars)
+{
+    var normalized = string.Join(' ', text.Split(new[] { '\r', '\n', '\t' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+    return normalized.Length <= maxChars ? normalized : normalized[..maxChars].TrimEnd() + "...";
+}
+
+static async Task<bool> TryRunToolCommand(IServiceProvider sp, string input)
+{
+    if (!input.StartsWith(':') || input.StartsWith(":model ", StringComparison.OrdinalIgnoreCase))
+        return false;
+
+    var space = input.IndexOf(' ');
+    var command = space < 0 ? input : input[..space];
+    var rest = space < 0 ? "" : input[(space + 1)..].Trim();
+
+    var parsed = command.ToLowerInvariant() switch
+    {
+        ":search" => ToolCommand("knowledge_search", JsonSerializer.Serialize(new { query = rest })),
+        ":read" => ToolCommand("read_course_material", BuildReadArgs(rest)),
+        ":note" => ToolCommand("add_note", BuildNoteArgs(rest)),
+        ":notes" => ToolCommand("list_notes", BuildNotesArgs(rest)),
+        ":profile" => ToolCommand("show_learning_profile", "{}"),
+        ":plan" => ToolCommand("study_plan", JsonSerializer.Serialize(new { goal = rest })),
+        ":quiz" => ToolCommand("make_quiz", BuildQuizArgs(rest)),
+        ":calc" => ToolCommand("calculate", JsonSerializer.Serialize(new { expression = rest })),
+        ":import" => ToolCommand("import_course_materials", BuildImportArgs(rest)),
+        _ => null
+    };
+
+    if (parsed is null) return false;
+
+    if (string.IsNullOrWhiteSpace(rest) && command is not ":profile" and not ":notes")
+    {
+        AnsiConsole.MarkupLine($"[yellow]缺少参数。输入 :help 查看用法。[/]");
+        return true;
+    }
+
+    var registry = sp.GetRequiredService<ToolRegistry>();
+    if (!registry.TryGet(parsed.Value.ToolName, out var tool))
+    {
+        AnsiConsole.MarkupLine($"[red]未找到工具：{Markup.Escape(parsed.Value.ToolName)}[/]");
+        return true;
+    }
+
+    try
+    {
+        using var doc = JsonDocument.Parse(parsed.Value.ArgumentsJson);
+        var result = await tool.InvokeAsync(doc.RootElement);
+        AnsiConsole.Write(new Panel(Markup.Escape(result))
+            .Header(parsed.Value.ToolName)
+            .RoundedBorder()
+            .BorderColor(Color.Blue));
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]工具指令执行失败：{Markup.Escape(ex.Message)}[/]");
+    }
+
+    return true;
+}
+
+static (string ToolName, string ArgumentsJson)? ToolCommand(string toolName, string argumentsJson) =>
+    (toolName, argumentsJson);
+
+static string BuildReadArgs(string rest)
+{
+    var fileName = rest;
+    int? startPage = null;
+    int? endPage = null;
+
+    var lastSpace = rest.LastIndexOf(' ');
+    if (lastSpace > 0 && TryParsePageRange(rest[(lastSpace + 1)..].Trim(), out startPage, out endPage))
+    {
+        fileName = rest[..lastSpace].Trim();
+    }
+
+    return JsonSerializer.Serialize(new { fileName, startPage, endPage });
+}
+
+static bool TryParsePageRange(string value, out int? startPage, out int? endPage)
+{
+    startPage = null;
+    endPage = null;
+
+    var rangeParts = value.Split('-', 2, StringSplitOptions.TrimEntries);
+    if (!int.TryParse(rangeParts[0], out var start)) return false;
+
+    startPage = start;
+    if (rangeParts.Length > 1 && int.TryParse(rangeParts[1], out var end)) endPage = end;
+    return true;
+}
+
+static string BuildNoteArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var title = parts.Length > 0 ? parts[0] : "未命名笔记";
+    var content = parts.Length > 1 ? parts[1] : rest;
+    var tags = parts.Length > 2
+        ? parts[2].Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        : Array.Empty<string>();
+    return JsonSerializer.Serialize(new { title, content, tags });
+}
+
+static string BuildNotesArgs(string rest)
+{
+    if (string.IsNullOrWhiteSpace(rest)) return "{}";
+    return rest.StartsWith("#", StringComparison.Ordinal)
+        ? JsonSerializer.Serialize(new { tag = rest[1..] })
+        : JsonSerializer.Serialize(new { keyword = rest });
+}
+
+static string BuildQuizArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var material = parts.Length > 0 ? parts[0] : "";
+    var count = parts.Length > 1 && int.TryParse(parts[1], out var n) ? n : 3;
+    return JsonSerializer.Serialize(new { material, count });
+}
+
+static string BuildImportArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var directory = parts.Length > 0 ? parts[0] : "";
+    var glob = parts.Length > 1 ? parts[1] : null;
+    return JsonSerializer.Serialize(new { directory, glob });
+}
+
+static bool TryReadMultiAgentCommand(string input, out string goal)
+{
+    const string multi = ":multi ";
+    const string multiAgent = ":multi-agent ";
+
+    if (input.Equals(":multi", StringComparison.OrdinalIgnoreCase)
+        || input.Equals(":multi-agent", StringComparison.OrdinalIgnoreCase))
+    {
+        goal = "";
+        return true;
+    }
+
+    if (input.StartsWith(multi, StringComparison.OrdinalIgnoreCase))
+    {
+        goal = input[multi.Length..].Trim();
+        return true;
+    }
+
+    if (input.StartsWith(multiAgent, StringComparison.OrdinalIgnoreCase))
+    {
+        goal = input[multiAgent.Length..].Trim();
+        return true;
+    }
+
+    goal = "";
+    return false;
 }

@@ -623,6 +623,140 @@ public class KnowledgeMcpToolsTests
     }
 }
 
+public class MultiAgentOrchestratorTests
+{
+    [Fact]
+    public async Task MultiAgentWorkflowProducesPlanResearchTutorAndReviewSteps()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-multi-agent-test-" + Guid.NewGuid().ToString("N"));
+        var profilePath = Path.Combine(root, "learning-profile.json");
+
+        try
+        {
+            var options = Options.Create(new AgentOptions
+            {
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+                Rag = new RagOptions { TopK = 3 }
+            });
+            var embed = new LocalHashEmbeddingClient(options);
+            var store = new InMemoryVectorStore();
+            var text = "ReAct Agent 由 LLM、Agent Loop、Memory 和 Tools 组成，会通过 Thought Action Observation 循环调用工具。";
+            store.Replace(new[]
+            {
+                new KnowledgeChunk
+                {
+                    Id = "react",
+                    Source = "react-agent.md",
+                    Text = text,
+                    Vector = await embed.EmbedAsync(text)
+                }
+            });
+
+            var profileStore = new JsonLearningProfileStore(profilePath);
+            await profileStore.UpdateAsync(new LearningProfileUpdate
+            {
+                WeakTopics = new() { "ReAct" },
+                Goals = new() { "准备期末答辩" },
+                PreferredStyle = "先讲概念再映射代码"
+            });
+
+            var orchestrator = new MultiAgentOrchestrator(
+                new KnowledgeSearchService(embed, store, options),
+                profileStore);
+
+            var result = await orchestrator.RunAsync("解释 ReAct Agent 并准备答辩");
+
+            Assert.True(result.PassedReview);
+            Assert.Equal(new[] { "PlannerAgent", "ResearchAgent", "TutorAgent", "ReviewerAgent" },
+                result.Steps.Select(s => s.AgentName).ToArray());
+            Assert.Contains("react-agent.md", result.Steps[1].Output);
+            Assert.Contains("准备期末答辩", result.FinalAnswer);
+            Assert.Contains("核心概念解释", result.FinalAnswer);
+            Assert.Contains("和本项目代码的对应关系", result.FinalAnswer);
+            Assert.Contains("验收命令", result.FinalAnswer);
+            Assert.Contains("下一步", result.FinalAnswer);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task MultiAgentReviewWarnsWhenKnowledgeIndexIsMissing()
+    {
+        var options = Options.Create(new AgentOptions
+        {
+            Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+            Rag = new RagOptions { TopK = 3 }
+        });
+        var profilePath = Path.Combine(Path.GetTempPath(), "smartstudy-empty-profile-" + Guid.NewGuid().ToString("N") + ".json");
+        var orchestrator = new MultiAgentOrchestrator(
+            new KnowledgeSearchService(new LocalHashEmbeddingClient(options), new InMemoryVectorStore(), options),
+            new JsonLearningProfileStore(profilePath));
+
+        var result = await orchestrator.RunAsync("解释 MCP");
+
+        Assert.False(result.PassedReview);
+        Assert.Contains("ResearchAgent", result.Steps.Select(s => s.AgentName));
+        Assert.Contains("ReviewerAgent 修正建议", result.FinalAnswer);
+    }
+
+    [Fact]
+    public async Task MultiAgentUsesExplanationModeForGeneralQuestion()
+    {
+        var options = Options.Create(new AgentOptions
+        {
+            Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+            Rag = new RagOptions { TopK = 2 }
+        });
+        var embed = new LocalHashEmbeddingClient(options);
+        var store = new InMemoryVectorStore();
+        var text = "ReAct Agent 会结合 reasoning 和 acting，通过工具调用处理复杂任务。";
+        store.Replace(new[]
+        {
+            new KnowledgeChunk { Id = "react", Source = "react.md", Text = text, Vector = await embed.EmbedAsync(text) }
+        });
+
+        var orchestrator = new MultiAgentOrchestrator(
+            new KnowledgeSearchService(embed, store, options),
+            new JsonLearningProfileStore(Path.Combine(Path.GetTempPath(), "smartstudy-general-profile-" + Guid.NewGuid().ToString("N") + ".json")));
+
+        var result = await orchestrator.RunAsync("解释 ReAct Agent");
+
+        Assert.Contains("知识讲解版", result.FinalAnswer);
+        Assert.DoesNotContain("答辩版讲解", result.FinalAnswer);
+        Assert.Contains("为什么它有用", result.FinalAnswer);
+    }
+
+    [Fact]
+    public async Task MultiAgentUsesStudyPlanModeForReviewGoal()
+    {
+        var options = Options.Create(new AgentOptions
+        {
+            Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+            Rag = new RagOptions { TopK = 2 }
+        });
+        var embed = new LocalHashEmbeddingClient(options);
+        var store = new InMemoryVectorStore();
+        var text = "MCP 可以让外部 Host 通过标准协议调用工具。";
+        store.Replace(new[]
+        {
+            new KnowledgeChunk { Id = "mcp", Source = "mcp.md", Text = text, Vector = await embed.EmbedAsync(text) }
+        });
+
+        var orchestrator = new MultiAgentOrchestrator(
+            new KnowledgeSearchService(embed, store, options),
+            new JsonLearningProfileStore(Path.Combine(Path.GetTempPath(), "smartstudy-study-profile-" + Guid.NewGuid().ToString("N") + ".json")));
+
+        var result = await orchestrator.RunAsync("复习 MCP 和 RAG");
+
+        Assert.Contains("学习建议版", result.FinalAnswer);
+        Assert.DoesNotContain("答辩版讲解", result.FinalAnswer);
+        Assert.Contains("建议学习路径", result.FinalAnswer);
+    }
+}
+
 public class LearningProfileTests
 {
     [Fact]

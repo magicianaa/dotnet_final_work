@@ -53,6 +53,9 @@ public static class ConsoleLineEditor
         Console.Write(prompt);
         Console.ResetColor();
 
+        if (Console.IsInputRedirected || Console.IsOutputRedirected)
+            return Console.ReadLine() ?? "";
+
         var line = new EditableLineBuffer();
         var inputStartLeft = Console.CursorLeft;
         var inputStartTop = Console.CursorTop;
