@@ -131,7 +131,7 @@ public class CalculatorToolTests
 public class MakeQuizToolTests
 {
     [Fact]
-    public async Task NormalizesFencedJsonQuizOutput()
+    public async Task GeneratesQuizWithoutRevealingAnswer()
     {
         var llm = new FakeLlmClient(new[]
         {
@@ -151,14 +151,24 @@ public class MakeQuizToolTests
                 """
             }
         });
-        var tool = new MakeQuizTool(llm);
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-quiz-session-test-" + Guid.NewGuid().ToString("N"));
+        var tool = new MakeQuizTool(llm, new JsonQuizSessionStore(Path.Combine(root, "quiz-sessions.json")));
         var args = JsonDocument.Parse("""{"material":"ReAct 包含 Thought、Action、Observation。","count":1}""").RootElement;
 
-        var result = await tool.InvokeAsync(args);
+        try
+        {
+            var result = await tool.InvokeAsync(args);
 
-        using var doc = JsonDocument.Parse(result);
-        Assert.Equal(JsonValueKind.Array, doc.RootElement.ValueKind);
-        Assert.Equal("ReAct 的 Action 是什么？", doc.RootElement[0].GetProperty("question").GetString());
+            Assert.Contains("已生成练习", result);
+            Assert.Contains("ReAct 的 Action 是什么？", result);
+            Assert.Contains("B. 调用工具", result);
+            Assert.DoesNotContain("标准答案：调用工具", result);
+            Assert.DoesNotContain("Action 阶段会调用外部工具", result);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -181,13 +191,22 @@ public class MakeQuizToolTests
                 """
             }
         });
-        var tool = new MakeQuizTool(llm);
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-quiz-repair-test-" + Guid.NewGuid().ToString("N"));
+        var tool = new MakeQuizTool(llm, new JsonQuizSessionStore(Path.Combine(root, "quiz-sessions.json")));
         var args = JsonDocument.Parse("""{"material":"Observation 是工具返回结果。","count":1}""").RootElement;
 
-        var result = await tool.InvokeAsync(args);
+        try
+        {
+            var result = await tool.InvokeAsync(args);
 
-        Assert.Equal(2, llm.Requests.Count);
-        Assert.Contains("Observation 表示什么？", result);
+            Assert.Equal(2, llm.Requests.Count);
+            Assert.Contains("Observation 表示什么？", result);
+            Assert.DoesNotContain("Agent 把工具结果写回上下文继续推理。", result);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 
     [Fact]
@@ -198,13 +217,15 @@ public class MakeQuizToolTests
             new ChatResponse { Content = "bad" },
             new ChatResponse { Content = """[{"question":"缺字段"}]""" }
         });
-        var tool = new MakeQuizTool(llm);
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-quiz-fail-test-" + Guid.NewGuid().ToString("N"));
+        var tool = new MakeQuizTool(llm, new JsonQuizSessionStore(Path.Combine(root, "quiz-sessions.json")));
         var args = JsonDocument.Parse("""{"material":"任意材料","count":1}""").RootElement;
 
         var result = await tool.InvokeAsync(args);
 
         Assert.StartsWith("出题失败：LLM 未返回合法的练习题 JSON", result);
         Assert.Equal(2, llm.Requests.Count);
+        if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
     }
 }
 
@@ -545,7 +566,140 @@ public class KnowledgeSearchServiceTests
 
         Assert.Contains("检索到 1 段相关内容", result);
         Assert.Contains("react.md", result);
+        Assert.Contains("证据编号：S1", result);
+        Assert.Contains("ChunkId：r", result);
+        Assert.Contains("来源汇总：react.md", result);
         Assert.Contains("Thought Action Observation", result);
+    }
+}
+
+public class StudyProgressToolTests
+{
+    [Fact]
+    public async Task TracksTasksCompletionAndHistory()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-progress-test-" + Guid.NewGuid().ToString("N"));
+        var path = Path.Combine(root, "data", "study-progress.json");
+
+        try
+        {
+            var store = new JsonStudyProgressStore(path);
+            var add = new AddStudyTaskTool(store);
+            var done = new MarkTaskDoneTool(store);
+            var progress = new ShowProgressTool(store);
+            var history = new ReviewHistoryTool(store);
+
+            await add.InvokeAsync(JsonDocument.Parse("""
+            {"title":"复习 ReAct 循环","topic":"ReAct","minutes":40}
+            """).RootElement);
+            await done.InvokeAsync(JsonDocument.Parse("""
+            {"task":"ReAct","reflection":"能解释 Thought Action Observation","actualMinutes":35}
+            """).RootElement);
+
+            var progressText = await progress.InvokeAsync(JsonDocument.Parse("{}").RootElement);
+            var historyText = await history.InvokeAsync(JsonDocument.Parse("""{"limit":5}""").RootElement);
+
+            Assert.Contains("1/1 已完成", progressText);
+            Assert.Contains("35 分钟", progressText);
+            Assert.Contains("复习 ReAct 循环", historyText);
+            Assert.Contains("Thought Action Observation", historyText);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
+public class QuizResultToolTests
+{
+    [Fact]
+    public async Task SubmitQuizAnswerGradesSavedQuizAndRecordsMistake()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-submit-quiz-test-" + Guid.NewGuid().ToString("N"));
+        var sessionPath = Path.Combine(root, "data", "quiz-sessions.json");
+        var quizPath = Path.Combine(root, "data", "quiz-results.json");
+        var profilePath = Path.Combine(root, "data", "learning-profile.json");
+
+        try
+        {
+            var sessions = new JsonQuizSessionStore(sessionPath);
+            var session = await sessions.SaveAsync(new QuizSession
+            {
+                Questions = new()
+                {
+                    new QuizQuestion
+                    {
+                        Number = 1,
+                        Question = "ReAct 的 Observation 是什么？",
+                        Options = new() { "模型思考", "工具返回结果" },
+                        Answer = "工具返回结果",
+                        Explanation = "Observation 是 Action 后的工具结果。"
+                    }
+                }
+            });
+            var quizStore = new JsonQuizResultStore(quizPath);
+            var profileStore = new JsonLearningProfileStore(profilePath);
+            var submit = new SubmitQuizAnswerTool(sessions, quizStore, profileStore);
+
+            var result = await submit.InvokeAsync(JsonDocument.Parse($$"""
+            {
+              "quizId": "{{session.Id}}",
+              "questionNumber": 1,
+              "answer": "A",
+              "topic": "ReAct"
+            }
+            """).RootElement);
+            var attempts = await quizStore.ListAsync(mistakesOnly: true, topic: "ReAct");
+            var profile = await profileStore.GetAsync();
+
+            Assert.Contains("答错", result);
+            Assert.Contains("标准答案：工具返回结果", result);
+            Assert.Single(attempts);
+            Assert.Contains("ReAct", profile.WeakTopics);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task RecordsMistakeAndUpdatesLearningProfile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-quiz-result-test-" + Guid.NewGuid().ToString("N"));
+        var quizPath = Path.Combine(root, "data", "quiz-results.json");
+        var profilePath = Path.Combine(root, "data", "learning-profile.json");
+
+        try
+        {
+            var quizStore = new JsonQuizResultStore(quizPath);
+            var profileStore = new JsonLearningProfileStore(profilePath);
+            var record = new RecordQuizResultTool(quizStore, profileStore);
+            var mistakes = new ShowMistakesTool(quizStore);
+
+            var result = await record.InvokeAsync(JsonDocument.Parse("""
+            {
+              "question": "ReAct 的 Observation 是什么？",
+              "topic": "ReAct",
+              "userAnswer": "模型思考",
+              "correctAnswer": "工具返回结果",
+              "isCorrect": false,
+              "explanation": "Observation 是 Action 后的工具结果。"
+            }
+            """).RootElement);
+            var mistakeText = await mistakes.InvokeAsync(JsonDocument.Parse("{}").RootElement);
+            var profile = await profileStore.GetAsync();
+
+            Assert.Contains("答错", result);
+            Assert.Contains("ReAct", profile.WeakTopics);
+            Assert.Contains("工具返回结果", mistakeText);
+            Assert.Contains("答题统计：0/1 正确", mistakeText);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
     }
 }
 

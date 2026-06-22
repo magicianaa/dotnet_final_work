@@ -21,10 +21,16 @@ public sealed class MakeQuizTool : ITool
     };
 
     private readonly ILlmClient _llm;
-    public MakeQuizTool(ILlmClient llm) => _llm = llm;
+    private readonly IQuizSessionStore _sessions;
+
+    public MakeQuizTool(ILlmClient llm, IQuizSessionStore sessions)
+    {
+        _llm = llm;
+        _sessions = sessions;
+    }
 
     public string Name => "make_quiz";
-    public string Description => "根据给定的学习材料原文生成若干道带答案和解析的结构化练习题。调用前必须先用 knowledge_search 或 read_course_material 取得真实课程材料，不能凭常识或用户一句话直接出题。工具会校验并修复 JSON 输出，适合复习。";
+    public string Description => "根据给定的学习材料原文生成练习题并隐藏答案。调用前必须先用 knowledge_search 或 read_course_material 取得真实课程材料，不能凭常识或用户一句话直接出题。工具会保存标准答案，用户回答后应调用 submit_quiz_answer 判分并给解析。";
 
     public JsonElement ParametersSchema { get; } = JsonSchema.Build("""
     {
@@ -49,14 +55,51 @@ public sealed class MakeQuizTool : ITool
         var resp = await _llm.ChatAsync(BuildGenerateRequest(material, count), ct);
         var raw = resp.Content ?? "";
         if (TryNormalizeQuizJson(raw, count, out var normalized, out var error))
-            return normalized;
+            return await SaveAndFormatQuizAsync(normalized, ct);
 
         var repair = await _llm.ChatAsync(BuildRepairRequest(raw, error, count), ct);
         var repairedRaw = repair.Content ?? "";
         if (TryNormalizeQuizJson(repairedRaw, count, out normalized, out error))
-            return normalized;
+            return await SaveAndFormatQuizAsync(normalized, ct);
 
         return $"出题失败：LLM 未返回合法的练习题 JSON。最后错误：{error}\n原始输出片段：{Truncate(repairedRaw, 800)}";
+    }
+
+    private async Task<string> SaveAndFormatQuizAsync(string normalizedJson, CancellationToken ct)
+    {
+        var items = JsonSerializer.Deserialize<List<QuizItem>>(normalizedJson, JsonOptions) ?? new List<QuizItem>();
+        var session = new QuizSession
+        {
+            Questions = items.Select((item, index) => new QuizQuestion
+            {
+                Number = index + 1,
+                Question = item.Question,
+                Options = item.Options.ToList(),
+                Answer = item.Answer,
+                Explanation = item.Explanation
+            }).ToList()
+        };
+        await _sessions.SaveAsync(session, ct);
+
+        var lines = new List<string>
+        {
+            $"已生成练习 #{session.Id}，共 {session.Questions.Count} 题。请先作答，答案和解析已隐藏。",
+            "提交答案格式：`submit_quiz_answer` 工具，或聊天快捷指令 `:answer <quizId> | <题号> | <你的答案> | <主题>`。",
+            ""
+        };
+
+        foreach (var question in session.Questions)
+        {
+            lines.Add($"{question.Number}. {question.Question}");
+            if (question.Options.Count > 0)
+            {
+                for (var i = 0; i < question.Options.Count; i++)
+                    lines.Add($"   {OptionLabel(i)}. {question.Options[i]}");
+            }
+            lines.Add("");
+        }
+
+        return string.Join("\n", lines).TrimEnd();
     }
 
     private static ChatRequest BuildGenerateRequest(string material, int count)
@@ -230,9 +273,11 @@ public sealed class MakeQuizTool : ITool
         return value.Length <= maxChars ? value : value[..maxChars] + "...";
     }
 
-    private sealed record QuizItem(
+    internal sealed record QuizItem(
         [property: JsonPropertyName("question")] string Question,
         [property: JsonPropertyName("options")] IReadOnlyList<string> Options,
         [property: JsonPropertyName("answer")] string Answer,
         [property: JsonPropertyName("explanation")] string Explanation);
+
+    private static string OptionLabel(int index) => ((char)('A' + index)).ToString();
 }

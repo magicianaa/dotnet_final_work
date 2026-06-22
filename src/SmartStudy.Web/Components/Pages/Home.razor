@@ -1,0 +1,253 @@
+@page "/"
+@rendermode InteractiveServer
+@inject ReActAgent Agent
+@inject KnowledgeIndexer Indexer
+@inject DashboardStateService Dashboard
+@inject WebAgentTraceStore TraceStore
+@implements IDisposable
+
+<PageTitle>SmartStudy Agent</PageTitle>
+
+<section class="workspace">
+    <header class="workspace-header">
+        <div>
+            <p class="eyebrow">SmartStudy Web</p>
+            <h1>智能学习助手工作台</h1>
+        </div>
+        <div class="header-actions">
+            <button class="icon-button" title="刷新状态" @onclick="LoadDashboardAsync">↻</button>
+            <button class="primary-button" @onclick="BuildIndexAsync" disabled="@isBusy">重建索引</button>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(statusMessage))
+    {
+        <div class="status-line">@statusMessage</div>
+    }
+
+    <section class="metrics-grid">
+        <div class="metric">
+            <span>LLM</span>
+            <strong>@(state?.LlmModel ?? "loading")</strong>
+            <small>@(state?.LlmProfile ?? "-") · @(state?.LlmApiKeyConfigured == true ? "key ready" : "missing key")</small>
+        </div>
+        <div class="metric">
+            <span>Embedding</span>
+            <strong>@(state?.EmbeddingProvider ?? "loading")</strong>
+            <small>@(state?.EmbeddingModel ?? "-")</small>
+        </div>
+        <div class="metric">
+            <span>Knowledge</span>
+            <strong>@(state?.LoadedChunkCount.ToString() ?? "0") chunks</strong>
+            <small>@(state?.KnowledgeFileCount.ToString() ?? "0") markdown · @(state?.ImportedMaterialCount.ToString() ?? "0") imported</small>
+        </div>
+        <div class="metric">
+            <span>Tools</span>
+            <strong>@(state?.Tools.Count.ToString() ?? "0") registered</strong>
+            <small>@(state?.IndexFileExists == true ? $"{state.IndexFileBytes / 1024} KB index" : "index missing")</small>
+        </div>
+    </section>
+
+    <section class="main-grid">
+        <div class="conversation-panel">
+            <div class="panel-heading">
+                <h2>对话</h2>
+                <button class="text-button" @onclick="ClearChat">清空</button>
+            </div>
+
+            <div class="messages">
+                @if (messages.Count == 0)
+                {
+                    <div class="empty-state">
+                        <strong>可以直接提问课程资料、要求生成复习计划，或让 Agent 记录笔记。</strong>
+                        <span>下方示例会触发不同工具，右侧会显示 Thought、Action、Observation 和最终答案。</span>
+                    </div>
+                }
+                @foreach (var message in messages)
+                {
+                    <article class="message @message.Role">
+                        <span>@message.Label</span>
+                        <p>@message.Content</p>
+                    </article>
+                }
+            </div>
+
+            <div class="quick-prompts">
+                @foreach (var prompt in quickPrompts)
+                {
+                    <button @onclick="() => UsePrompt(prompt)">@prompt.Label</button>
+                }
+            </div>
+
+            <EditForm Model="this" OnSubmit="AskAsync" class="ask-form">
+                <InputTextArea @bind-Value="question" placeholder="输入问题，例如：请解释 ReAct Agent 的工作流，并结合课程资料说明" />
+                <button class="primary-button" disabled="@(isBusy || string.IsNullOrWhiteSpace(question))">发送</button>
+            </EditForm>
+        </div>
+
+        <aside class="inspector">
+            <section class="timeline-panel">
+                <div class="panel-heading">
+                    <h2>Agent 时间线</h2>
+                    <span>@TraceStore.Events.Count events</span>
+                </div>
+                <div class="timeline">
+                    @if (TraceStore.Events.Count == 0)
+                    {
+                        <p class="muted">运行一次提问后，这里会展示工具调用链。</p>
+                    }
+                    @foreach (var ev in TraceStore.Events)
+                    {
+                        <article class="event @ev.Type.ToString().ToLowerInvariant()">
+                            <div>
+                                <strong>@ev.Type</strong>
+                                <span>step @ev.Step</span>
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(ev.ToolName))
+                            {
+                                <code>@ev.ToolName</code>
+                            }
+                            <p>@Truncate(ev.Content, ev.Type == AgentEventType.Observation ? 360 : 220)</p>
+                        </article>
+                    }
+                </div>
+            </section>
+
+            <section class="side-panel">
+                <h2>工具</h2>
+                <div class="tool-list">
+                    @foreach (var tool in state?.Tools ?? Array.Empty<WebToolSummary>())
+                    {
+                        <details>
+                            <summary>@tool.Name</summary>
+                            <p>@tool.Description</p>
+                        </details>
+                    }
+                </div>
+            </section>
+
+            <section class="side-panel">
+                <h2>最近笔记</h2>
+                @if (state?.RecentNotes.Count > 0)
+                {
+                    @foreach (var note in state.RecentNotes)
+                    {
+                        <article class="note">
+                            <strong>@note.Title</strong>
+                            <span>@string.Join(", ", note.Tags)</span>
+                        </article>
+                    }
+                }
+                else
+                {
+                    <p class="muted">还没有笔记。试试让 Agent “把这个知识点记下来”。</p>
+                }
+            </section>
+        </aside>
+    </section>
+</section>
+
+@code {
+    private DashboardState? state;
+    private string question = "";
+    private string statusMessage = "";
+    private bool isBusy;
+    private readonly List<ChatUiMessage> messages = new();
+    private readonly QuickPrompt[] quickPrompts =
+    [
+        new("解释 ReAct", "请检索课程资料，并解释 ReAct Agent 的 Thought、Action、Observation 工作流。"),
+        new("生成计划", "我对 ReAct 和 MCP 比较薄弱，目标是完成期末答辩，请更新我的学习画像并制定 3 天复习计划。"),
+        new("出练习题", "请基于课程资料生成 3 道关于 Agent Loop 的选择题。")
+    ];
+
+    protected override async Task OnInitializedAsync()
+    {
+        TraceStore.Changed += HandleTraceChanged;
+        await LoadDashboardAsync();
+    }
+
+    private async Task LoadDashboardAsync()
+    {
+        state = await Dashboard.GetAsync();
+    }
+
+    private async Task BuildIndexAsync()
+    {
+        isBusy = true;
+        statusMessage = "正在重建知识库索引...";
+        try
+        {
+            await Indexer.BuildAsync();
+            statusMessage = "知识库索引已重建。";
+            await LoadDashboardAsync();
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"索引构建失败：{ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task AskAsync()
+    {
+        var input = question.Trim();
+        if (input.Length == 0 || isBusy) return;
+
+        isBusy = true;
+        statusMessage = "Agent 正在处理...";
+        TraceStore.Clear();
+        messages.Add(new ChatUiMessage("user", "你", input));
+        question = "";
+
+        try
+        {
+            var result = await Agent.RunAsync(input);
+            messages.Add(new ChatUiMessage("agent", "SmartStudy", result.FinalAnswer));
+            statusMessage = result.ReachedLimit ? "已达到最大推理步数。" : $"完成，共 {result.Steps} 步。";
+            await LoadDashboardAsync();
+        }
+        catch (Exception ex)
+        {
+            messages.Add(new ChatUiMessage("agent error", "SmartStudy", $"出错：{ex.Message}"));
+            statusMessage = "Agent 调用失败。";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private void UsePrompt(QuickPrompt prompt)
+    {
+        question = prompt.Text;
+    }
+
+    private void ClearChat()
+    {
+        messages.Clear();
+        TraceStore.Clear();
+        statusMessage = "";
+    }
+
+    private void HandleTraceChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    private static string Truncate(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        return value.Length <= max ? value : value[..max] + "...";
+    }
+
+    public void Dispose()
+    {
+        TraceStore.Changed -= HandleTraceChanged;
+    }
+
+    private sealed record ChatUiMessage(string Role, string Label, string Content);
+    private sealed record QuickPrompt(string Label, string Text);
+}

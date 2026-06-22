@@ -1,4 +1,4 @@
-# SmartStudy 架构设计文档
+﻿# SmartStudy 架构设计文档
 
 ## 1. 系统总览
 
@@ -28,8 +28,10 @@ flowchart LR
         T6[UpdateLearningProfileTool]
         T7[ShowLearningProfileTool]
         T8[StudyPlanTool]
-        T9[CalculatorTool]
-        T10[MakeQuizTool]
+        T9[StudyProgressTools]
+        T10[QuizResultTools]
+        T11[CalculatorTool]
+        T12[MakeQuizTool]
         LLM[OpenAiLlmClient]
         Emb[IEmbeddingClient\nLocalHash / Zhipu]
         VS[InMemoryVectorStore]
@@ -51,6 +53,8 @@ flowchart LR
         Imported[(knowledge/imported/*.md)]
         Notes[(data/notes.json)]
         Profile[(data/learning-profile.json)]
+        Progress[(data/study-progress.json)]
+        QuizResults[(data/quiz-results.json)]
         TraceFile[(data/trace-*.jsonl)]
     end
 
@@ -58,7 +62,7 @@ flowchart LR
     DI --> Agent
     Agent --> Mem
     Agent --> Reg
-    Reg --> T1 & T2 & T3 & T4 & T5 & T6 & T7 & T8 & T9 & T10
+    Reg --> T1 & T2 & T3 & T4 & T5 & T6 & T7 & T8 & T9 & T10 & T11 & T12
     Agent --> LLM --> ZhipuLLM
     T1 --> Emb
     Emb --> ZhipuEmb
@@ -71,9 +75,11 @@ flowchart LR
     Idx --> Imported
     Idx --> VS
     T4 & T5 --> Notes
-    T6 & T7 & T8 --> Profile
+    T6 & T7 & T8 & T10 --> Profile
+    T9 --> Progress
+    T10 --> QuizResults
     T8 --> T1
-    T10 --> LLM
+    T12 --> LLM
     Agent --> TraceI
     TraceI -.-> Tracer1
     TraceI -.-> FileT --> TraceFile
@@ -182,8 +188,15 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | `update_learning_profile` | 更新长期学习画像中的薄弱项、优势项、目标和偏好 | 用户表达不会什么、想准备什么、偏好怎么学 | `LearningProfileTools.cs` |
 | `show_learning_profile` | 查看当前长期学习画像 | 用户问"我的学习画像/薄弱点是什么" | `LearningProfileTools.cs` |
 | `study_plan` | 根据学习画像和课程资料生成短期复习计划 | 用户要求复习计划、备考路线、学习安排 | `LearningProfileTools.cs` |
+| `add_study_task` | 添加可追踪学习任务 | 用户要求安排或记录待办学习任务 | `StudyProgressTools.cs` |
+| `mark_task_done` | 标记学习任务完成并记录复盘 | 用户说完成某个学习任务或今天学完某主题 | `StudyProgressTools.cs` |
+| `show_progress` | 查看任务完成率、累计时长和待办 | 用户询问学习进度或完成情况 | `StudyProgressTools.cs` |
+| `review_history` | 查看最近学习历史和复盘记录 | 用户要求回顾最近学了什么 | `StudyProgressTools.cs` |
+| `submit_quiz_answer` | 提交练习答案，自动判分并给解析 | 用户回答 make_quiz 生成的题目 | `QuizResultTools.cs` |
+| `record_quiz_result` | 手动记录练习题答题结果，错题自动写入薄弱项 | 用户要求记录已有错题 | `QuizResultTools.cs` |
+| `show_mistakes` | 查看错题本和答题正确率 | 用户要求查看错题或复盘练习 | `QuizResultTools.cs` |
 | `calculate`        | 安全表达式求值（`DataTable.Compute`） | 学习时长 / 复习天数等计算      | `CalculatorTool.cs`        |
-| `make_quiz`        | 二次调用 LLM 生成结构化练习题，并做 JSON 校验与修复 | 用户说"出几道题""帮我复习"     | `MakeQuizTool.cs`          |
+| `make_quiz`        | 二次调用 LLM 生成结构化练习题，隐藏答案，并做 JSON 校验与修复 | 用户说"出几道题""帮我复习"     | `MakeQuizTool.cs`          |
 
 ## 5. 失败模式与防御
 
@@ -197,3 +210,5 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | 长期偏好丢失         | `JsonLearningProfileStore` 把薄弱项、优势项、目标和讲解偏好写入 `learning-profile.json` |
 | 网络瞬时失败         | `HttpClient` 由 `IHttpClientFactory` 管理，CLI 层 `try/catch` 捕获并友好提示       |
 | API Key 泄漏       | 通过 `appsettings.Local.json` 或环境变量注入；示例配置中 `ApiKey` 留空                  |
+
+

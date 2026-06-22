@@ -28,13 +28,19 @@ public sealed class KnowledgeSearchService
         if (hits.Count == 0) return "未检索到相关内容。";
 
         var sb = new StringBuilder();
-        sb.AppendLine($"检索到 {hits.Count} 段相关内容（按相似度降序）：");
+        sb.AppendLine($"检索到 {hits.Count} 段相关内容（按相似度降序，可追溯来源）：");
         int i = 1;
+        var sources = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var h in hits)
         {
-            sb.AppendLine($"\n[{i++}] 来源={h.Chunk.Source}  相似度={h.Score:F3}");
+            sources.Add(h.Chunk.Source);
+            sb.AppendLine($"\n[{i}] 来源：{h.Chunk.Source}");
+            sb.AppendLine($"证据编号：S{i}  ChunkId：{h.Chunk.Id}  相似度：{h.Score:F3}");
             sb.AppendLine(h.Chunk.Text.Trim());
+            i++;
         }
+        sb.AppendLine();
+        sb.AppendLine($"来源汇总：{string.Join("；", sources)}");
         return sb.ToString();
     }
 }

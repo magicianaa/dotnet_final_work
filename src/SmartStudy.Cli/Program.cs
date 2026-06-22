@@ -57,6 +57,24 @@ host.Services.AddSingleton<ILearningProfileStore>(sp =>
     var profilePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "learning-profile.json");
     return new JsonLearningProfileStore(profilePath);
 });
+host.Services.AddSingleton<IStudyProgressStore>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
+    var progressPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "study-progress.json");
+    return new JsonStudyProgressStore(progressPath);
+});
+host.Services.AddSingleton<IQuizResultStore>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
+    var quizPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "quiz-results.json");
+    return new JsonQuizResultStore(quizPath);
+});
+host.Services.AddSingleton<IQuizSessionStore>(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
+    var quizPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "quiz-sessions.json");
+    return new JsonQuizSessionStore(quizPath);
+});
 host.Services.AddSingleton<IConversationMemory>(_ => new ConversationMemory(maxNonSystemMessages: 40));
 
 // Agent 工具
@@ -68,6 +86,13 @@ host.Services.AddSingleton<ITool, ListNotesTool>();
 host.Services.AddSingleton<ITool, UpdateLearningProfileTool>();
 host.Services.AddSingleton<ITool, ShowLearningProfileTool>();
 host.Services.AddSingleton<ITool, StudyPlanTool>();
+host.Services.AddSingleton<ITool, AddStudyTaskTool>();
+host.Services.AddSingleton<ITool, MarkTaskDoneTool>();
+host.Services.AddSingleton<ITool, ShowProgressTool>();
+host.Services.AddSingleton<ITool, ReviewHistoryTool>();
+host.Services.AddSingleton<ITool, RecordQuizResultTool>();
+host.Services.AddSingleton<ITool, SubmitQuizAnswerTool>();
+host.Services.AddSingleton<ITool, ShowMistakesTool>();
 host.Services.AddSingleton<ITool, CalculatorTool>();
 host.Services.AddSingleton<ITool, MakeQuizTool>();
 host.Services.AddSingleton<ToolRegistry>();
@@ -394,7 +419,14 @@ static void PrintChatCommands()
     AddCommandRow(table, ":notes [tag-or-keyword]", "调用 list_notes");
     AddCommandRow(table, ":profile", "调用 show_learning_profile");
     AddCommandRow(table, ":plan <goal>", "调用 study_plan");
+    AddCommandRow(table, ":task <title> | <topic> | <minutes>", "调用 add_study_task");
+    AddCommandRow(table, ":done <task> | <reflection> | <actualMinutes>", "调用 mark_task_done");
+    AddCommandRow(table, ":progress", "调用 show_progress");
+    AddCommandRow(table, ":history [limit]", "调用 review_history");
     AddCommandRow(table, ":quiz <material> | <count>", "调用 make_quiz");
+    AddCommandRow(table, ":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer");
+    AddCommandRow(table, ":mistake <question> | <topic> | <your> | <correct> | <explanation>", "调用 record_quiz_result");
+    AddCommandRow(table, ":mistakes [topic]", "调用 show_mistakes");
     AddCommandRow(table, ":calc <expression>", "调用 calculate");
     AddCommandRow(table, ":import <directory> | <glob>", "调用 import_course_materials");
     AnsiConsole.Write(table);
@@ -445,7 +477,14 @@ static async Task<bool> TryRunToolCommand(IServiceProvider sp, string input)
         ":notes" => ToolCommand("list_notes", BuildNotesArgs(rest)),
         ":profile" => ToolCommand("show_learning_profile", "{}"),
         ":plan" => ToolCommand("study_plan", JsonSerializer.Serialize(new { goal = rest })),
+        ":task" => ToolCommand("add_study_task", BuildTaskArgs(rest)),
+        ":done" => ToolCommand("mark_task_done", BuildDoneArgs(rest)),
+        ":progress" => ToolCommand("show_progress", "{}"),
+        ":history" => ToolCommand("review_history", BuildHistoryArgs(rest)),
         ":quiz" => ToolCommand("make_quiz", BuildQuizArgs(rest)),
+        ":answer" => ToolCommand("submit_quiz_answer", BuildAnswerArgs(rest)),
+        ":mistake" => ToolCommand("record_quiz_result", BuildMistakeArgs(rest)),
+        ":mistakes" => ToolCommand("show_mistakes", BuildMistakesArgs(rest)),
         ":calc" => ToolCommand("calculate", JsonSerializer.Serialize(new { expression = rest })),
         ":import" => ToolCommand("import_course_materials", BuildImportArgs(rest)),
         _ => null
@@ -453,7 +492,7 @@ static async Task<bool> TryRunToolCommand(IServiceProvider sp, string input)
 
     if (parsed is null) return false;
 
-    if (string.IsNullOrWhiteSpace(rest) && command is not ":profile" and not ":notes")
+    if (string.IsNullOrWhiteSpace(rest) && command is not ":profile" and not ":notes" and not ":progress" and not ":history" and not ":mistakes")
     {
         AnsiConsole.MarkupLine($"[yellow]缺少参数。输入 :help 查看用法。[/]");
         return true;
@@ -539,6 +578,66 @@ static string BuildQuizArgs(string rest)
     var material = parts.Length > 0 ? parts[0] : "";
     var count = parts.Length > 1 && int.TryParse(parts[1], out var n) ? n : 3;
     return JsonSerializer.Serialize(new { material, count });
+}
+
+static string BuildTaskArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var title = parts.Length > 0 ? parts[0] : "";
+    var topic = parts.Length > 1 ? parts[1] : "";
+    var minutes = parts.Length > 2 && int.TryParse(parts[2], out var n) ? n : 30;
+    return JsonSerializer.Serialize(new { title, topic, minutes });
+}
+
+static string BuildDoneArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var task = parts.Length > 0 ? parts[0] : "";
+    var reflection = parts.Length > 1 ? parts[1] : "";
+    int? actualMinutes = parts.Length > 2 && int.TryParse(parts[2], out var n) ? n : null;
+    return JsonSerializer.Serialize(new { task, reflection, actualMinutes });
+}
+
+static string BuildHistoryArgs(string rest)
+{
+    var limit = int.TryParse(rest, out var n) ? n : 10;
+    return JsonSerializer.Serialize(new { limit });
+}
+
+static string BuildMistakeArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var question = parts.Length > 0 ? parts[0] : "";
+    var topic = parts.Length > 1 ? parts[1] : "";
+    var userAnswer = parts.Length > 2 ? parts[2] : "";
+    var correctAnswer = parts.Length > 3 ? parts[3] : "";
+    var explanation = parts.Length > 4 ? parts[4] : "";
+    return JsonSerializer.Serialize(new
+    {
+        question,
+        topic,
+        userAnswer,
+        correctAnswer,
+        isCorrect = string.Equals(userAnswer.Trim(), correctAnswer.Trim(), StringComparison.OrdinalIgnoreCase),
+        explanation
+    });
+}
+
+static string BuildAnswerArgs(string rest)
+{
+    var parts = rest.Split('|', StringSplitOptions.TrimEntries);
+    var quizId = parts.Length > 0 ? parts[0] : "latest";
+    var questionNumber = parts.Length > 1 && int.TryParse(parts[1], out var n) ? n : 1;
+    var answer = parts.Length > 2 ? parts[2] : "";
+    var topic = parts.Length > 3 ? parts[3] : "";
+    return JsonSerializer.Serialize(new { quizId, questionNumber, answer, topic });
+}
+
+static string BuildMistakesArgs(string rest)
+{
+    return string.IsNullOrWhiteSpace(rest)
+        ? "{}"
+        : JsonSerializer.Serialize(new { topic = rest });
 }
 
 static string BuildImportArgs(string rest)

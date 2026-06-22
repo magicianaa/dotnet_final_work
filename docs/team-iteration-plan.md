@@ -1,4 +1,4 @@
-# SmartStudy 4 人 7 天迭代计划
+﻿# SmartStudy 4 人 7 天迭代计划
 
 ## 1. 计划定位
 
@@ -7,9 +7,9 @@
 - .NET 8 解决方案可构建。
 - ReAct Agent 主循环已完成。
 - 支持 GLM / DeepSeek 模型切换。
-- 支持 10 个 Agent 工具。
-- 支持本地 RAG、智谱 embedding、课件导入、课件精读、学习笔记、学习画像、复习计划、MCP、Streaming、doctor/tools 诊断命令。
-- 当前单元测试 29/29 通过。
+- 支持 17 个 Agent 工具。
+- 支持本地 RAG、智谱 embedding、课件导入、课件精读、学习笔记、学习画像、学习进度、错题本、复习计划、MCP、Streaming、doctor/tools 诊断命令。
+- 当前单元测试 36/36 通过。
 
 因此这份 7 天计划不是从零开发，而是面向“课程交付前最后一轮团队迭代”：提高稳定性、展示效果、答辩解释质量和团队分工可信度。
 
@@ -21,7 +21,7 @@
 | --- | --- | --- | --- |
 | 成员 A | Agent 核心与 LLM 负责人 | ReAct 主循环、模型 profile、tool calling 策略、system prompt、streaming | 更稳定的工具触发策略、模型切换验收记录、核心代码讲解稿 |
 | 成员 B | RAG 与课程资料负责人 | 本地/云端 embedding、知识库索引、课件导入、课件精读、资料质量 | 索引统计、资料导入验收记录、课件精读样例 |
-| 成员 C | 工具、MCP 与 CLI 负责人 | 10 个工具、doctor/tools/status、MCP server、交互式 CLI | 工具清单验收、MCP 启动说明、CLI 演示脚本 |
+| 成员 C | 工具、MCP 与 CLI 负责人 | 17 个工具、doctor/tools/status、MCP server、交互式 CLI | 工具清单验收、MCP 启动说明、CLI 演示脚本 |
 | 成员 D | 测试、文档与答辩负责人 | xUnit、端到端验收、README、架构图、反思报告、答辩 FAQ | 测试报告、演示脚本、最终文档一致性检查 |
 
 ## 3. 总体验收目标
@@ -32,7 +32,7 @@
 | --- | --- |
 | 构建稳定 | `dotnet build SmartStudy.sln --no-restore` 为 0 warning / 0 error |
 | 测试稳定 | `dotnet test SmartStudy.sln --no-build --nologo` 全部通过 |
-| 工具链完整 | `doctor` 显示 10 个工具，`tools` 能列出所有工具 |
+| 工具链完整 | `doctor` 显示 17 个工具，`tools` 能列出所有工具 |
 | RAG 可演示 | `index` 成功，`knowledge_search` 能检索 ReAct / MCP 资料 |
 | 课件工作流可演示 | `import_course_materials` 能导入本地资料，`read_course_material` 能按页讲解课件 |
 | 长期记忆可演示 | `add_note/list_notes` 和 `update_learning_profile/show_learning_profile/study_plan` 可用 |
@@ -241,3 +241,5 @@ dotnet test SmartStudy.sln --no-build --nologo
 | 演示脚本 | `docs/demo-script.md` |
 | 反思报告 | `docs/reflection-report.md` |
 | 最终验证 | `dotnet build`、`dotnet test`、`doctor`、`tools` |
+
+
