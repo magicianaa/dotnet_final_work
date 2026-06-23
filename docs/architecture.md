@@ -182,7 +182,7 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | ------------------ | ----------------------------- | ------------------- | -------------------------- |
 | `knowledge_search` | RAG 检索课程资料                    | 回答事实性问题之前           | `KnowledgeSearchTool.cs`   |
 | `read_course_material` | 读取已导入课件的连续页面或整份内容       | 用户点名某个 PDF/PPT/课件并要求讲解 | `ReadCourseMaterialTool.cs` |
-| `import_course_materials` | 导入本地 PDF/PPTX/DOCX/TXT/MD 资料并重建索引 | 用户提供本地资料目录 | `ImportCourseMaterialsTool.cs` |
+| `import_course_materials` | 导入本地 PDF/PPTX/DOCX/XLSX/CSV/TSV/HTML/TXT/MD 资料并重建索引 | 用户提供本地资料目录 | `ImportCourseMaterialsTool.cs` |
 | `add_note`         | 把要点持久化为 JSON 笔记               | 用户说"记一下""保存"        | `NoteTools.cs`             |
 | `list_notes`       | 按标签 / 关键字查询笔记                 | 用户问"我之前记了什么"        | `NoteTools.cs`             |
 | `update_learning_profile` | 更新长期学习画像中的薄弱项、优势项、目标和偏好 | 用户表达不会什么、想准备什么、偏好怎么学 | `LearningProfileTools.cs` |
@@ -205,6 +205,54 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | LLM 返回非法 JSON   | `JsonDocument.Parse` 包 `try/catch`，把错误写回 observation 让 LLM 自纠            |
 | 工具自身抛异常        | `try/catch` 把异常文本作为 observation，循环继续                                  |
 | 死循环 / 无意义反复调工具 | `MaxLoopSteps` 硬上限 + `AgentResult.ReachedLimit` 标志                       |
+
+## 6. Plan-and-Execute 与质量检查
+
+除了默认的 `ReActAgent` 和演示用 `MultiAgentOrchestrator`，项目还提供 `PlanExecuteAgent`，用于展示 PDF 中提到的 Plan-and-Execute 架构模式。它的流程是：
+
+```mermaid
+flowchart LR
+    Goal["用户目标"] --> Plan["Plan: 生成执行计划"]
+    Plan --> Retrieve["Execute: RAG 检索资料依据"]
+    Retrieve --> Compose["Execute: 生成结构化答复"]
+    Compose --> Review["Review: AnswerQualityReviewer"]
+    Review --> Final["Final Answer"]
+```
+
+`AnswerQualityReviewer` 是确定性规则检查器，不额外调用 LLM。它检查六项内容：
+
+| 检查项 | 目的 |
+| --- | --- |
+| 非空回答 | 防止空输出 |
+| 回答充分 | 防止过短回答 |
+| 覆盖用户目标 | 检查目标关键词是否被回应 |
+| 包含资料依据 | 确认回答带有来源、证据编号或 ChunkId |
+| 包含下一步 | 让答复可执行、可验收 |
+| 无明显占位文本 | 防止出现“此处省略”“TODO”等交付痕迹 |
+
+运行入口：
+
+```powershell
+dotnet run --no-build --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- plan-execute "解释 ReAct Agent"
+```
+
+验收时应看到 `Plan`、`Execute: RAG 检索`、`Execute: 生成答复`、`Review: 答案质量检查` 四个步骤，以及 `Quality Review: PASS`。如果 RAG 检索因为网络或云端 embedding 失败，检索步骤会显示 `WARN`，最终答复仍会给出失败原因而不是让程序崩溃。
+
+## 7. 资料导入格式扩展
+
+`CourseMaterialImporter` 的支持格式已经扩展为：
+
+```text
+.pdf, .pptx, .docx, .xlsx, .csv, .tsv, .html, .htm, .md, .txt
+```
+
+其中：
+
+- `.csv/.tsv` 使用轻量级分隔符解析，保留表格行和单元格文本。
+- `.html/.htm` 移除标签、script/style，并做 HTML decode。
+- `.xlsx` 直接读取 OpenXML zip 结构中的 workbook、worksheet 和 sharedStrings，不引入额外 NuGet 包。
+- `.pptx/.docx` 继续使用 OpenXML 文本节点抽取。
+- `.pdf` 继续使用 Python/PyMuPDF 路径，失败时该文件会被跳过并计入 skipped。
 | 上下文过长          | `ConversationMemory` 滑动窗口保留最近 N 条非 system 消息                          |
 | 练习题 JSON 不合法   | `MakeQuizTool` 提取 fenced JSON / 数组片段，校验字段，失败时自动请求 LLM 修复一次       |
 | 长期偏好丢失         | `JsonLearningProfileStore` 把薄弱项、优势项、目标和讲解偏好写入 `learning-profile.json` |

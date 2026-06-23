@@ -98,6 +98,8 @@ host.Services.AddSingleton<ITool, MakeQuizTool>();
 host.Services.AddSingleton<ToolRegistry>();
 host.Services.AddSingleton<SmartStudyDoctor>();
 host.Services.AddSingleton<MultiAgentOrchestrator>();
+host.Services.AddSingleton<AnswerQualityReviewer>();
+host.Services.AddSingleton<PlanExecuteAgent>();
 
 // 追踪：Spectre 控制台 + 文件 JSONL
 host.Services.AddSingleton<IAgentTracer>(sp =>
@@ -142,6 +144,17 @@ switch (cmd)
             return;
         }
         await RunMultiAgent(app.Services, goal);
+        break;
+    case "plan":
+    case "plan-execute":
+    case "plan-and-execute":
+        var planGoal = string.Join(' ', args.Skip(1));
+        if (string.IsNullOrWhiteSpace(planGoal))
+        {
+            AnsiConsole.MarkupLine("[red]用法：dotnet run -- plan-execute \"你的目标\"[/]");
+            return;
+        }
+        await RunPlanExecute(app.Services, planGoal);
         break;
     case "reset":
         var mem = app.Services.GetRequiredService<IConversationMemory>();
@@ -209,6 +222,14 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
         if (input == ":stream") { useStreaming = !useStreaming; AnsiConsole.MarkupLine($"[green]流式输出 = {useStreaming}[/]"); continue; }
         if (input == ":models") { PrintModelProfiles(profiles); continue; }
         if (input is ":help" or ":commands") { PrintChatCommands(); continue; }
+        if (TryReadPlanExecuteCommand(input, out var planGoal))
+        {
+            if (string.IsNullOrWhiteSpace(planGoal))
+                AnsiConsole.MarkupLine("[yellow]用法：:plan-execute 你的目标[/]");
+            else
+                await RunPlanExecute(sp, planGoal);
+            continue;
+        }
         if (TryReadMultiAgentCommand(input, out var multiGoal))
         {
             if (string.IsNullOrWhiteSpace(multiGoal))
@@ -350,6 +371,42 @@ static async Task RunMultiAgent(IServiceProvider sp, string goal)
         .BorderColor(result.PassedReview ? Color.Green : Color.Yellow));
 }
 
+static async Task RunPlanExecute(IServiceProvider sp, string goal)
+{
+    var indexer = sp.GetRequiredService<KnowledgeIndexer>();
+    if (await indexer.LoadIfExistsAsync())
+        AnsiConsole.MarkupLine("[dim]已加载已有知识库索引[/]");
+    else
+        AnsiConsole.MarkupLine("[yellow]提示：尚未构建知识库索引，Plan-and-Execute 的资料依据会受限。运行 `dotnet run -- index` 先建索引。[/]");
+
+    var agent = sp.GetRequiredService<PlanExecuteAgent>();
+    var result = await agent.RunAsync(goal);
+
+    AnsiConsole.Write(new Rule("[bold cyan]SmartStudy Plan-and-Execute[/]").RuleStyle("grey"));
+    AnsiConsole.MarkupLine($"[bold]目标：[/] {Markup.Escape(result.Goal)}");
+    AnsiConsole.WriteLine();
+
+    var table = new Table().RoundedBorder();
+    table.AddColumn("Step");
+    table.AddColumn("Status");
+    table.AddColumn("Output");
+
+    foreach (var step in result.Steps)
+    {
+        table.AddRow(
+            Markup.Escape(step.Name),
+            step.IsSuccessful ? "[green]OK[/]" : "[yellow]WARN[/]",
+            Markup.Escape(SummarizeForTable(step.Output, 420)));
+    }
+
+    AnsiConsole.Write(table);
+    AnsiConsole.Write(new Rule(result.Review.Passed ? "[green]Quality Review: PASS[/]" : "[yellow]Quality Review: NEEDS ATTENTION[/]").RuleStyle("grey"));
+    AnsiConsole.Write(new Panel(Markup.Escape(result.FinalAnswer))
+        .Header("Final Answer")
+        .RoundedBorder()
+        .BorderColor(result.Review.Passed ? Color.Green : Color.Yellow));
+}
+
 static async Task RunOneShot(IServiceProvider sp, string input, bool useStreaming)
 {
     var indexer = sp.GetRequiredService<KnowledgeIndexer>();
@@ -413,6 +470,7 @@ static void PrintChatCommands()
     AddCommandRow(table, ":models", "查看模型列表");
     AddCommandRow(table, ":model <name>", "切换模型");
     AddCommandRow(table, ":multi <goal>", "启动 Multi-Agent 协作");
+    AddCommandRow(table, ":plan-execute <goal>", "启动 Plan-and-Execute 并做答案质量检查");
     AddCommandRow(table, ":search <query>", "调用 knowledge_search");
     AddCommandRow(table, ":read <file> [start-end]", "调用 read_course_material");
     AddCommandRow(table, ":note <title> | <content> | <tag1,tag2>", "调用 add_note");
@@ -670,6 +728,30 @@ static bool TryReadMultiAgentCommand(string input, out string goal)
     {
         goal = input[multiAgent.Length..].Trim();
         return true;
+    }
+
+    goal = "";
+    return false;
+}
+
+static bool TryReadPlanExecuteCommand(string input, out string goal)
+{
+    var prefixes = new[] { ":plan-execute ", ":plan-and-execute ", ":pe " };
+    if (input.Equals(":plan-execute", StringComparison.OrdinalIgnoreCase)
+        || input.Equals(":plan-and-execute", StringComparison.OrdinalIgnoreCase)
+        || input.Equals(":pe", StringComparison.OrdinalIgnoreCase))
+    {
+        goal = "";
+        return true;
+    }
+
+    foreach (var prefix in prefixes)
+    {
+        if (input.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            goal = input[prefix.Length..].Trim();
+            return true;
+        }
     }
 
     goal = "";

@@ -13,7 +13,7 @@ public sealed class ImportCourseMaterialsTool : ITool
     public string Name => "import_course_materials";
 
     public string Description =>
-        "读取用户提供的本机课程资料文件夹（支持 .pdf/.pptx/.docx/.md/.txt），抽取文本，写入 knowledge/imported，并重建本地 RAG 索引。用户说“阅读这个文件夹/导入课程资料/我的资料在某路径”时应调用。";
+        "读取用户提供的本机课程资料文件夹（支持 .pdf/.pptx/.docx/.xlsx/.csv/.tsv/.html/.htm/.md/.txt），抽取文本，写入 knowledge/imported，并重建本地 RAG 索引。用户说“阅读这个文件夹/导入课程资料/我的资料在某路径”时应调用。";
 
     public JsonElement ParametersSchema { get; } = JsonSchema.Build("""
     {

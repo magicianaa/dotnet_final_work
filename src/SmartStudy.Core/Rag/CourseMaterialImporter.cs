@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
+using System.Xml.Linq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SmartStudy.Core.Configuration;
@@ -11,9 +12,9 @@ public sealed record CourseImportResult(int FilesRead, int FilesSkipped, int Chu
 
 public sealed class CourseMaterialImporter
 {
-    private static readonly HashSet<string> Supported = new(StringComparer.OrdinalIgnoreCase)
+    public static readonly IReadOnlySet<string> SupportedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
-        ".md", ".txt", ".pdf", ".pptx", ".docx"
+        ".md", ".txt", ".pdf", ".pptx", ".docx", ".csv", ".tsv", ".html", ".htm", ".xlsx"
     };
 
     private readonly KnowledgeIndexer _indexer;
@@ -38,7 +39,7 @@ public sealed class CourseMaterialImporter
         Directory.CreateDirectory(importedDir);
 
         var files = Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories)
-            .Where(f => Supported.Contains(Path.GetExtension(f)))
+            .Where(f => SupportedExtensions.Contains(Path.GetExtension(f)))
             .Where(f => string.IsNullOrWhiteSpace(glob) || Path.GetFileName(f).Contains(glob, StringComparison.OrdinalIgnoreCase))
             .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -95,6 +96,12 @@ public sealed class CourseMaterialImporter
         var ext = Path.GetExtension(file);
         if (ext.Equals(".md", StringComparison.OrdinalIgnoreCase) || ext.Equals(".txt", StringComparison.OrdinalIgnoreCase))
             return await File.ReadAllTextAsync(file, ct);
+        if (ext.Equals(".csv", StringComparison.OrdinalIgnoreCase) || ext.Equals(".tsv", StringComparison.OrdinalIgnoreCase))
+            return await ExtractDelimitedTextAsync(file, ct);
+        if (ext.Equals(".html", StringComparison.OrdinalIgnoreCase) || ext.Equals(".htm", StringComparison.OrdinalIgnoreCase))
+            return ExtractHtmlText(await File.ReadAllTextAsync(file, ct));
+        if (ext.Equals(".xlsx", StringComparison.OrdinalIgnoreCase))
+            return ExtractXlsxText(file);
         if (ext.Equals(".docx", StringComparison.OrdinalIgnoreCase))
             return ExtractOpenXmlText(file, "word/document.xml");
         if (ext.Equals(".pptx", StringComparison.OrdinalIgnoreCase))
@@ -102,6 +109,187 @@ public sealed class CourseMaterialImporter
         if (ext.Equals(".pdf", StringComparison.OrdinalIgnoreCase))
             return await ExtractPdfTextAsync(file, ct);
         return "";
+    }
+
+    private static async Task<string> ExtractDelimitedTextAsync(string file, CancellationToken ct)
+    {
+        var delimiter = Path.GetExtension(file).Equals(".tsv", StringComparison.OrdinalIgnoreCase) ? '\t' : ',';
+        var lines = await File.ReadAllLinesAsync(file, ct);
+        var sb = new StringBuilder();
+        sb.AppendLine($"## Table: {Path.GetFileName(file)}");
+        foreach (var line in lines)
+        {
+            var cells = ParseDelimitedLine(line, delimiter)
+                .Select(c => c.Trim())
+                .Where(c => !string.IsNullOrWhiteSpace(c));
+            sb.AppendLine(string.Join(" | ", cells));
+        }
+        return sb.ToString();
+    }
+
+    private static IReadOnlyList<string> ParseDelimitedLine(string line, char delimiter)
+    {
+        var cells = new List<string>();
+        var current = new StringBuilder();
+        var inQuotes = false;
+
+        for (var i = 0; i < line.Length; i++)
+        {
+            var ch = line[i];
+            if (ch == '"')
+            {
+                if (inQuotes && i + 1 < line.Length && line[i + 1] == '"')
+                {
+                    current.Append('"');
+                    i++;
+                }
+                else
+                {
+                    inQuotes = !inQuotes;
+                }
+                continue;
+            }
+
+            if (ch == delimiter && !inQuotes)
+            {
+                cells.Add(current.ToString());
+                current.Clear();
+                continue;
+            }
+
+            current.Append(ch);
+        }
+
+        cells.Add(current.ToString());
+        return cells;
+    }
+
+    private static string ExtractHtmlText(string html)
+    {
+        var withoutScripts = System.Text.RegularExpressions.Regex.Replace(
+            html,
+            @"<\s*(script|style)[^>]*>[\s\S]*?<\s*/\s*\1\s*>",
+            " ",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var withBreaks = System.Text.RegularExpressions.Regex.Replace(
+            withoutScripts,
+            @"</?(p|div|br|li|tr|h[1-6]|table|section|article)[^>]*>",
+            "\n",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        var noTags = System.Text.RegularExpressions.Regex.Replace(withBreaks, "<[^>]+>", " ");
+        var decoded = System.Net.WebUtility.HtmlDecode(noTags);
+        var lines = decoded
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(line => System.Text.RegularExpressions.Regex.Replace(line, @"\s+", " ").Trim())
+            .Where(line => line.Length > 0);
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private static string ExtractXlsxText(string file)
+    {
+        using var archive = ZipFile.OpenRead(file);
+        var sharedStrings = ReadSharedStrings(archive);
+        var workbookRels = ReadWorkbookRelationships(archive);
+        var sheetNames = ReadSheetNames(archive, workbookRels);
+        var sb = new StringBuilder();
+
+        var sheets = archive.Entries
+            .Where(e => e.FullName.StartsWith("xl/worksheets/sheet", StringComparison.OrdinalIgnoreCase)
+                        && e.FullName.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(e => e.FullName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        foreach (var sheet in sheets)
+        {
+            var sheetName = sheetNames.TryGetValue(sheet.FullName, out var name)
+                ? name
+                : Path.GetFileNameWithoutExtension(sheet.FullName);
+            sb.AppendLine($"## Sheet: {sheetName}");
+            using var stream = sheet.Open();
+            var doc = System.Xml.Linq.XDocument.Load(stream);
+            var rows = doc.Descendants().Where(e => e.Name.LocalName == "row");
+            foreach (var row in rows)
+            {
+                var cells = row.Descendants()
+                    .Where(e => e.Name.LocalName == "c")
+                    .Select(cell => ReadCellValue(cell, sharedStrings))
+                    .Where(value => !string.IsNullOrWhiteSpace(value))
+                    .ToList();
+                if (cells.Count > 0)
+                    sb.AppendLine(string.Join(" | ", cells));
+            }
+            sb.AppendLine();
+        }
+
+        return sb.ToString();
+    }
+
+    private static List<string> ReadSharedStrings(ZipArchive archive)
+    {
+        var entry = archive.GetEntry("xl/sharedStrings.xml");
+        if (entry is null) return new List<string>();
+
+        using var stream = entry.Open();
+        var doc = System.Xml.Linq.XDocument.Load(stream);
+        return doc.Descendants()
+            .Where(e => e.Name.LocalName == "si")
+            .Select(si => string.Concat(si.Descendants().Where(t => t.Name.LocalName == "t").Select(t => t.Value)))
+            .ToList();
+    }
+
+    private static Dictionary<string, string> ReadWorkbookRelationships(ZipArchive archive)
+    {
+        var entry = archive.GetEntry("xl/_rels/workbook.xml.rels");
+        if (entry is null) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        using var stream = entry.Open();
+        var doc = System.Xml.Linq.XDocument.Load(stream);
+        return doc.Descendants()
+            .Where(e => e.Name.LocalName == "Relationship")
+            .Where(e => e.Attribute("Id") is not null && e.Attribute("Target") is not null)
+            .ToDictionary(
+                e => e.Attribute("Id")!.Value,
+                e => NormalizeXlsxTarget(e.Attribute("Target")!.Value),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, string> ReadSheetNames(ZipArchive archive, Dictionary<string, string> rels)
+    {
+        var entry = archive.GetEntry("xl/workbook.xml");
+        if (entry is null) return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        XNamespace relNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        using var stream = entry.Open();
+        var doc = System.Xml.Linq.XDocument.Load(stream);
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sheet in doc.Descendants().Where(e => e.Name.LocalName == "sheet"))
+        {
+            var name = sheet.Attribute("name")?.Value;
+            var rid = sheet.Attribute(relNs + "id")?.Value;
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(rid)) continue;
+            if (rels.TryGetValue(rid, out var target))
+                result[target] = name;
+        }
+        return result;
+    }
+
+    private static string NormalizeXlsxTarget(string target)
+    {
+        var normalized = target.Replace('\\', '/').TrimStart('/');
+        return normalized.StartsWith("xl/", StringComparison.OrdinalIgnoreCase)
+            ? normalized
+            : "xl/" + normalized;
+    }
+
+    private static string ReadCellValue(System.Xml.Linq.XElement cell, IReadOnlyList<string> sharedStrings)
+    {
+        var type = cell.Attribute("t")?.Value;
+        var value = cell.Elements().FirstOrDefault(e => e.Name.LocalName == "v")?.Value ?? "";
+        if (type == "s" && int.TryParse(value, out var sharedIndex) && sharedIndex >= 0 && sharedIndex < sharedStrings.Count)
+            return sharedStrings[sharedIndex];
+        if (type == "inlineStr")
+            return string.Concat(cell.Descendants().Where(e => e.Name.LocalName == "t").Select(e => e.Value));
+        return value;
     }
 
     private static string ExtractOpenXmlText(string file, string prefix)

@@ -24,7 +24,7 @@ PDF 还鼓励实现 RAG、MCP、Streaming、可观测性和单元测试。当前
 | RAG | 支持云端 embedding 与本地 Hash Embedding，检索输出含来源标注 | 可以增加更细的页码/章节引用 |
 | CLI | 支持中文行内编辑、流式输出、模型切换 | 可以增加 `/help` 或命令帮助面板 |
 | MCP | 暴露笔记、知识库检索和资料清单 MCP 工具 | 可以继续扩展学习画像 MCP 工具 |
-| Tests | 36 个测试覆盖核心逻辑 | 继续覆盖新功能和边界情况 |
+| Tests | 41 个测试覆盖核心逻辑 | 继续覆盖新功能和边界情况 |
 | Docs | README、架构文档、反思报告、开发计划已同步 | 后续可补充更完整的答辩讲稿 |
 
 ## 3. 后续迭代路线
@@ -137,9 +137,70 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "请把 ReA
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "列出 final 标签的笔记"
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "我对 ReAct 和 MCP 比较薄弱，目标是完成期末答辩，请更新我的学习画像"
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "请基于我的学习画像制定一个 3 天复习计划"
+$env:SMARTSTUDY_Agent__Embedding__Provider = "local"
+dotnet run --no-build --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- plan-execute "解释 ReAct Agent"
 ```
 
-## 6. 风险与应对
+## 6. 本轮新增扩展验收
+
+### 6.1 Reflection Agent / 答案质量检查
+
+实现文件：
+
+- `src/SmartStudy.Core/Agent/AnswerQualityReviewer.cs`
+- `src/SmartStudy.Core/Agent/PlanExecuteAgent.cs`
+
+验收标准：
+
+1. `AnswerQualityReviewer` 能检查非空回答、回答充分、覆盖目标、资料依据、下一步、占位文本。
+2. 合格回答返回 `Passed = true`。
+3. 缺少来源或包含占位文本时返回明确 TODO 项。
+4. `AnswerQualityReviewerTests` 通过。
+
+### 6.2 Plan-and-Execute
+
+实现入口：
+
+```powershell
+dotnet run --no-build --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- plan-execute "解释 ReAct Agent"
+```
+
+验收标准：
+
+1. 输出 `SmartStudy Plan-and-Execute`。
+2. 表格包含 `Plan`、`Execute: RAG 检索`、`Execute: 生成答复`、`Review: 答案质量检查`。
+3. 检索成功时最终显示 `Quality Review: PASS`。
+4. 检索失败时步骤显示 WARN 并保留失败原因，程序不崩溃。
+5. `PlanExecuteAgentTests` 通过。
+
+本次实测结果：
+
+```text
+SmartStudy Plan-and-Execute
+Plan                         OK
+Execute: RAG 检索            OK
+Execute: 生成答复            OK
+Review: 答案质量检查         OK
+Quality Review: PASS
+```
+
+### 6.3 资料导入格式扩展
+
+扩展格式：
+
+```text
+.pdf, .pptx, .docx, .xlsx, .csv, .tsv, .html, .htm, .md, .txt
+```
+
+验收标准：
+
+1. CSV/TSV 抽取表格行。
+2. HTML 移除标签并保留正文。
+3. XLSX 抽取 Sheet 名称和单元格文本。
+4. 导入后生成 Markdown 并重建 RAG 索引。
+5. `CourseMaterialImporterExtendedFormatTests.ImportsCsvHtmlAndXlsxMaterials` 通过。
+
+## 7. 风险与应对
 
 | 风险 | 应对 |
 | --- | --- |

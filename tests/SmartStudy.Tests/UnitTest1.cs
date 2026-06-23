@@ -12,6 +12,8 @@ using SmartStudy.Core.Tools;
 using SmartStudy.Core.Tools.Builtin;
 using SmartStudy.Core.Tracing;
 using SmartStudy.Cli;
+using System.IO.Compression;
+using System.Text;
 
 namespace SmartStudy.Tests;
 
@@ -570,6 +572,240 @@ public class KnowledgeSearchServiceTests
         Assert.Contains("ChunkId：r", result);
         Assert.Contains("来源汇总：react.md", result);
         Assert.Contains("Thought Action Observation", result);
+    }
+}
+
+public class AnswerQualityReviewerTests
+{
+    [Fact]
+    public void ReviewerPassesAnswerWithGoalEvidenceAndNextStep()
+    {
+        var reviewer = new AnswerQualityReviewer();
+
+        var review = reviewer.Review(
+            "解释 ReAct Agent",
+            """
+            ReAct Agent 通过 Thought Action Observation 完成多步推理。
+            资料依据：[1] 来源：react.md 证据编号：S1 ChunkId：react#0。
+            下一步：运行 plan-execute 命令继续验收。
+            """);
+
+        Assert.True(review.Passed);
+        Assert.Contains("覆盖用户目标", review.PassedChecks);
+        Assert.Empty(review.Issues);
+    }
+
+    [Fact]
+    public void ReviewerFlagsMissingEvidenceAndPlaceholder()
+    {
+        var reviewer = new AnswerQualityReviewer();
+
+        var review = reviewer.Review("解释 MCP", "MCP 很重要，此处省略。");
+
+        Assert.False(review.Passed);
+        Assert.Contains(review.Issues, i => i.Check == "包含资料依据");
+        Assert.Contains(review.Issues, i => i.Check == "无明显占位文本");
+    }
+}
+
+public class PlanExecuteAgentTests
+{
+    [Fact]
+    public async Task PlanExecuteRunsPlanRetrieveComposeAndReview()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-plan-execute-test-" + Guid.NewGuid().ToString("N"));
+        var profilePath = Path.Combine(root, "learning-profile.json");
+
+        try
+        {
+            var options = Options.Create(new AgentOptions
+            {
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+                Rag = new RagOptions { TopK = 2 }
+            });
+            var embed = new LocalHashEmbeddingClient(options);
+            var store = new InMemoryVectorStore();
+            var text = "ReAct Agent 使用 Thought Action Observation 循环，并通过工具调用完成任务。";
+            store.Replace(new[]
+            {
+                new KnowledgeChunk { Id = "react#0", Source = "react.md", Text = text, Vector = await embed.EmbedAsync(text) }
+            });
+            var profiles = new JsonLearningProfileStore(profilePath);
+            await profiles.UpdateAsync(new LearningProfileUpdate
+            {
+                WeakTopics = new() { "ReAct" },
+                Goals = new() { "准备答辩" }
+            });
+
+            var agent = new PlanExecuteAgent(
+                new KnowledgeSearchService(embed, store, options),
+                profiles,
+                new AnswerQualityReviewer());
+
+            var result = await agent.RunAsync("解释 ReAct Agent");
+
+            Assert.True(result.Review.Passed);
+            Assert.Equal(new[] { "Plan", "Execute: RAG 检索", "Execute: 生成答复", "Review: 答案质量检查" },
+                result.Steps.Select(s => s.Name).ToArray());
+            Assert.Contains("资料依据", result.FinalAnswer);
+            Assert.Contains("下一步建议", result.FinalAnswer);
+            Assert.Contains("质量检查", string.Join(" ", result.Steps.Select(s => s.Output)));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task PlanExecuteFallsBackWhenSearchThrows()
+    {
+        var options = Options.Create(new AgentOptions
+        {
+            Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+            Rag = new RagOptions { TopK = 2 }
+        });
+        var agent = new PlanExecuteAgent(
+            new KnowledgeSearchService(new ThrowingEmbeddingClient(), new InMemoryVectorStoreWithOneChunk(), options),
+            new JsonLearningProfileStore(Path.Combine(Path.GetTempPath(), "smartstudy-plan-fallback-" + Guid.NewGuid().ToString("N") + ".json")),
+            new AnswerQualityReviewer());
+
+        var result = await agent.RunAsync("解释 ReAct Agent");
+
+        Assert.False(result.Steps.Single(s => s.Name == "Execute: RAG 检索").IsSuccessful);
+        Assert.Contains("检索失败", result.FinalAnswer);
+        Assert.True(result.Review.Passed);
+    }
+}
+
+public sealed class ThrowingEmbeddingClient : IEmbeddingClient
+{
+    public Task<float[]> EmbedAsync(string text, CancellationToken ct = default) =>
+        throw new HttpRequestException("network blocked");
+
+    public Task<IReadOnlyList<float[]>> EmbedBatchAsync(IEnumerable<string> texts, CancellationToken ct = default) =>
+        throw new HttpRequestException("network blocked");
+}
+
+public sealed class InMemoryVectorStoreWithOneChunk : IVectorStore
+{
+    private readonly InMemoryVectorStore _inner = new();
+
+    public InMemoryVectorStoreWithOneChunk()
+    {
+        _inner.Replace(new[] { new KnowledgeChunk { Id = "x", Source = "x.md", Text = "x", Vector = new float[] { 1 } } });
+    }
+
+    public int Count => _inner.Count;
+    public IReadOnlyList<KnowledgeChunk> Chunks => _inner.Chunks;
+    public Task SaveAsync(string path, CancellationToken ct = default) => _inner.SaveAsync(path, ct);
+    public Task LoadAsync(string path, CancellationToken ct = default) => _inner.LoadAsync(path, ct);
+    public void Replace(IEnumerable<KnowledgeChunk> chunks) => _inner.Replace(chunks);
+    public IReadOnlyList<SearchResult> Search(float[] queryVector, int topK) => _inner.Search(queryVector, topK);
+}
+
+public class CourseMaterialImporterExtendedFormatTests
+{
+    [Fact]
+    public async Task ImportsCsvHtmlAndXlsxMaterials()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-import-formats-test-" + Guid.NewGuid().ToString("N"));
+        var source = Path.Combine(root, "source");
+        var knowledge = Path.Combine(root, "knowledge");
+        var data = Path.Combine(root, "data");
+        Directory.CreateDirectory(source);
+
+        await File.WriteAllTextAsync(Path.Combine(source, "scores.csv"), "Topic,Score\nReAct,90\nMCP,80", Encoding.UTF8);
+        await File.WriteAllTextAsync(Path.Combine(source, "lesson.html"), "<html><body><h1>Agent Lesson</h1><p>RAG evidence</p><script>ignore()</script></body></html>", Encoding.UTF8);
+        CreateMinimalXlsx(Path.Combine(source, "sheet.xlsx"), "SheetA", new[] { "Name", "Value", "ReAct", "Tool Calling" });
+
+        try
+        {
+            var options = Options.Create(new AgentOptions
+            {
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+                Rag = new RagOptions
+                {
+                    KnowledgeDirectory = knowledge,
+                    IndexFile = Path.Combine(data, "index.json")
+                }
+            });
+            var embed = new LocalHashEmbeddingClient(options);
+            var store = new InMemoryVectorStore();
+            var indexer = new KnowledgeIndexer(embed, store, options, NullLogger<KnowledgeIndexer>.Instance);
+            var importer = new CourseMaterialImporter(indexer, options, NullLogger<CourseMaterialImporter>.Instance);
+
+            var result = await importer.ImportAsync(source);
+
+            Assert.Equal(3, result.FilesRead);
+            Assert.Equal(0, result.FilesSkipped);
+            var importedText = string.Join("\n", Directory.EnumerateFiles(Path.Combine(knowledge, "imported"), "*.md")
+                .Select(File.ReadAllText));
+            Assert.Contains("ReAct | 90", importedText);
+            Assert.Contains("Agent Lesson", importedText);
+            Assert.Contains("Sheet: SheetA", importedText);
+            Assert.Contains("Tool Calling", importedText);
+            Assert.True(result.ChunksIndexed > 0);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static void CreateMinimalXlsx(string path, string sheetName, IReadOnlyList<string> sharedStrings)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Create);
+        AddEntry(archive, "[Content_Types].xml", """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+          <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+          <Default Extension="xml" ContentType="application/xml"/>
+          <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+          <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+          <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+        </Types>
+        """);
+        AddEntry(archive, "_rels/.rels", """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+        </Relationships>
+        """);
+        AddEntry(archive, "xl/workbook.xml", $$"""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <sheets><sheet name="{{sheetName}}" sheetId="1" r:id="rId1"/></sheets>
+        </workbook>
+        """);
+        AddEntry(archive, "xl/_rels/workbook.xml.rels", """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+          <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+        </Relationships>
+        """);
+        AddEntry(archive, "xl/sharedStrings.xml", $$"""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{{sharedStrings.Count}}" uniqueCount="{{sharedStrings.Count}}">
+          {{string.Join("", sharedStrings.Select(s => $"<si><t>{System.Security.SecurityElement.Escape(s)}</t></si>"))}}
+        </sst>
+        """);
+        AddEntry(archive, "xl/worksheets/sheet1.xml", """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+          <sheetData>
+            <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row>
+            <row r="2"><c r="A2" t="s"><v>2</v></c><c r="B2" t="s"><v>3</v></c></row>
+          </sheetData>
+        </worksheet>
+        """);
+    }
+
+    private static void AddEntry(ZipArchive archive, string name, string content)
+    {
+        var entry = archive.CreateEntry(name);
+        using var writer = new StreamWriter(entry.Open(), Encoding.UTF8);
+        writer.Write(content);
     }
 }
 

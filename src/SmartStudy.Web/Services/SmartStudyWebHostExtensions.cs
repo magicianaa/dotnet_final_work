@@ -83,6 +83,8 @@ public static class SmartStudyWebHostExtensions
         services.AddScoped<ITool, CalculatorTool>();
         services.AddScoped<ITool, MakeQuizTool>();
         services.AddScoped<ToolRegistry>();
+        services.AddScoped<AnswerQualityReviewer>();
+        services.AddScoped<PlanExecuteAgent>();
 
         services.AddScoped<WebAgentTraceStore>();
         services.AddScoped<IAgentTracer, WebAgentTracer>();

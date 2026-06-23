@@ -266,6 +266,50 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- chat --stream
 4. `ReviewerAgent` 能检查是否覆盖目标、是否有资料依据、是否包含下一步。
 5. `dotnet test SmartStudy.sln --no-build --nologo` 中 Multi-Agent 相关测试通过。
 
+### 可替换演示：Plan-and-Execute + Reflection
+
+这段适合在讲完 ReAct 后展示“超越 ReAct 的架构模式”。它先规划任务，再检索资料，最后用确定性 Reviewer 做质量检查。
+
+```powershell
+$env:SMARTSTUDY_Agent__Embedding__Provider = "local"
+dotnet run --no-build --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- plan-execute "解释 ReAct Agent"
+```
+
+运行效果应包含：
+
+```text
+SmartStudy Plan-and-Execute
+Plan                         OK
+Execute: RAG 检索            OK
+Execute: 生成答复            OK
+Review: 答案质量检查         OK
+Quality Review: PASS
+```
+
+验收标准：
+
+1. 控制台表格必须出现 Plan、Execute、Review 三类步骤。
+2. RAG 检索输出包含来源、证据编号、ChunkId 和相似度。
+3. Review 输出包含“质量检查通过”，并列出 OK 检查项。
+4. 即使云端 embedding 或网络不可用，命令也应降级展示 `检索失败`，而不是异常退出。
+5. `AnswerQualityReviewerTests` 和 `PlanExecuteAgentTests` 通过。
+
+### 可替换演示：更多资料格式导入
+
+如果老师问“你的 RAG 能不能导入非 PDF 资料”，可以展示 `import_course_materials` 已支持：
+
+```text
+.pdf / .pptx / .docx / .xlsx / .csv / .tsv / .html / .htm / .md / .txt
+```
+
+验收标准：
+
+1. CSV/TSV 会抽取表格行。
+2. HTML 会去除标签并保留正文。
+3. XLSX 会抽取工作表名和单元格文本。
+4. 导入后会在 `knowledge/imported` 生成 Markdown，并重建 RAG 索引。
+5. `CourseMaterialImporterExtendedFormatTests.ImportsCsvHtmlAndXlsxMaterials` 通过。
+
 ## 4. 常见答辩问题
 
 ### Q1：你的 Agent 和普通聊天机器人有什么区别？
@@ -302,7 +346,7 @@ Agent 主循环会捕获工具参数 JSON 的解析错误，并把错误作为 o
 
 ### Q8：项目如何证明稳定性？
 
-项目包含 xUnit 测试，覆盖 Agent Loop、工具调用、记忆、RAG、本地 embedding、流式 tool call、中文输入编辑、课件精读、MCP 工具、学习画像、画像补参兜底、复习计划和 Multi-Agent 编排。测试使用 `FakeLlmClient` 或本地 embedding，不依赖真实 LLM API，因此可稳定运行。
+项目包含 xUnit 测试，覆盖 Agent Loop、工具调用、记忆、RAG、本地 embedding、流式 tool call、中文输入编辑、课件精读、MCP 工具、学习画像、画像补参兜底、复习计划、Multi-Agent 编排、Plan-and-Execute、答案质量检查和多格式资料导入。测试使用 `FakeLlmClient` 或本地 embedding，不依赖真实 LLM API，因此可稳定运行。
 
 ## 5. 网络异常时的备用演示
 
