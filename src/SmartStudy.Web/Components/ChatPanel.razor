@@ -1,0 +1,119 @@
+@using System.Text.RegularExpressions
+@using Markdig
+
+<div class="panel-heading">
+    <div>
+        <h2>对话</h2>
+        <p class="panel-note">对应 CLI 的 chat 模式；Web 端会在右侧展示 Agent 事件链。</p>
+    </div>
+    <div class="conversation-actions">
+        <label class="toggle">
+            <input type="checkbox" checked="@UseStreaming" @onchange="OnUseStreamingChanged" disabled="@IsBusy" />
+            <span>流式输出</span>
+        </label>
+        <button class="text-button" @onclick="OnClearChat">清空</button>
+    </div>
+</div>
+
+<div class="messages">
+    @if (Messages.Count == 0)
+    {
+        <div class="empty-state">
+            <strong>可以直接提问课程资料、要求生成复习计划，或让 Agent 记录笔记。</strong>
+            <span>下方示例会触发不同工具，右侧会显示 Thought、Action、Observation 和最终答案。</span>
+        </div>
+    }
+    @foreach (var message in Messages)
+    {
+        <article class="message @message.Role">
+            <span>@message.Label</span>
+            @if (message.Role.Equals("agent", StringComparison.OrdinalIgnoreCase))
+            {
+                <div class="markdown-body">@MarkdownToMarkup(message.Content)</div>
+            }
+            else
+            {
+                <p>@(string.IsNullOrEmpty(message.Content) ? "..." : message.Content)</p>
+            }
+        </article>
+    }
+</div>
+
+<div class="quick-prompts">
+    @foreach (var prompt in QuickPrompts)
+    {
+        <button @onclick="() => OnQuestionChanged(prompt.Text)">@prompt.Label</button>
+    }
+    <button class="text-button @(IsPlanMode ? "active-mode" : "")" style="padding: 4px 12px; font-size: 13px;" @onclick="OnTogglePlanMode">
+        @(IsPlanMode ? "关闭规划模式" : "高级规划")
+    </button>
+    <button class="text-button" style="padding: 4px 12px; font-size: 13px;" @onclick="OnShowImportModal">资料导入</button>
+</div>
+
+<div class="cli-hints">
+    <strong>CLI 原有快捷能力</strong>
+    <div>
+        @foreach (var item in CommandHints.Take(8))
+        {
+            <button type="button" title="@item.Description" @onclick="() => OnQuestionChanged(item.Prompt)">
+                <code>@item.Command</code>
+            </button>
+        }
+    </div>
+</div>
+
+<EditForm Model="this" OnSubmit="OnAsk" class="ask-form">
+    <textarea value="@Question" @oninput="e => OnQuestionChanged(e.Value?.ToString() ?? string.Empty)" placeholder="输入问题，例如：请解释 ReAct Agent 的工作流，并结合课程资料说明"></textarea>
+    <button class="primary-button" disabled="@(IsBusy || string.IsNullOrWhiteSpace(Question))">发送</button>
+</EditForm>
+
+@code {
+    [Parameter] public List<ChatUiMessage> Messages { get; set; } = new();
+    [Parameter] public IReadOnlyList<QuickPrompt> QuickPrompts { get; set; } = Array.Empty<QuickPrompt>();
+    [Parameter] public IReadOnlyList<CommandHint> CommandHints { get; set; } = Array.Empty<CommandHint>();
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public bool UseStreaming { get; set; }
+    [Parameter] public EventCallback<bool> UseStreamingChanged { get; set; }
+    [Parameter] public string Question { get; set; } = "";
+    [Parameter] public EventCallback<string> QuestionChanged { get; set; }
+    [Parameter] public EventCallback OnClearChat { get; set; }
+    [Parameter] public EventCallback OnAsk { get; set; }
+    [Parameter] public bool IsPlanMode { get; set; }
+    [Parameter] public EventCallback OnTogglePlanMode { get; set; }
+    [Parameter] public EventCallback OnShowImportModal { get; set; }
+
+    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .DisableHtml()
+        .Build();
+
+    private async Task OnUseStreamingChanged(ChangeEventArgs e)
+    {
+        if (e.Value is bool b)
+        {
+            await UseStreamingChanged.InvokeAsync(b);
+        }
+    }
+
+    private async Task OnQuestionChanged(string val)
+    {
+        await QuestionChanged.InvokeAsync(val);
+    }
+
+    private static MarkupString MarkdownToMarkup(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown))
+            return new MarkupString("<p>...</p>");
+
+        var html = Markdown.ToHtml(markdown, MarkdownPipeline);
+        return new MarkupString(SanitizeMarkdownHtml(html));
+    }
+
+    private static string SanitizeMarkdownHtml(string html)
+    {
+        html = Regex.Replace(html, @"<\s*(script|style|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(html, @"\s+on\w+\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)", "", RegexOptions.IgnoreCase);
+        html = Regex.Replace(html, @"(href|src)\s*=\s*(""|')\s*javascript:[^""']*\2", "$1=\"#\"", RegexOptions.IgnoreCase);
+        return html;
+    }
+}

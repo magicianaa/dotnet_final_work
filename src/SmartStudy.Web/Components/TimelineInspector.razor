@@ -1,0 +1,94 @@
+@using SmartStudy.Core
+
+<details class="side-panel timeline-panel" open>
+    <summary style="cursor: pointer;">
+        <div style="display: inline-flex; align-items: center; justify-content: space-between; width: calc(100% - 20px);">
+            <h2 style="margin: 0; display: inline;">Agent 时间线</h2>
+            <span style="font-weight: normal; font-size: 14px; color: var(--muted);">@TimelineItems.Count items</span>
+        </div>
+    </summary>
+    <div class="timeline" style="margin-top: 16px;">
+        @if (TimelineItems.Count == 0)
+        {
+            <p class="muted">运行一次提问后，这里会展示工具调用链。</p>
+        }
+        @foreach (var item in TimelineItems)
+        {
+            <article class="event @item.CssClass">
+                <div>
+                    <strong>@item.Title</strong>
+                    <span>step @item.Step</span>
+                </div>
+                @if (!string.IsNullOrWhiteSpace(item.ToolName))
+                {
+                    <code>@item.ToolName</code>
+                }
+                <p>@Truncate(item.Content, item.MaxChars)</p>
+            </article>
+        }
+    </div>
+</details>
+
+<details class="side-panel" open>
+    <summary style="cursor: pointer;">
+        <h2 style="margin: 0; display: inline;">CLI 指令参考</h2>
+    </summary>
+    <div class="command-list" style="margin-top: 16px;">
+        @foreach (var item in CommandHints)
+        {
+            <div class="command-row">
+                <code>@item.Command</code>
+                <span>@item.Description</span>
+            </div>
+        }
+    </div>
+</details>
+
+<details class="side-panel" open>
+    <summary style="cursor: pointer;">
+        <h2 style="margin: 0; display: inline;">工具</h2>
+    </summary>
+    <div class="tool-list" style="margin-top: 16px;">
+        @foreach (var tool in State?.Tools ?? Array.Empty<WebToolSummary>())
+        {
+            <details style="margin-bottom: 8px;">
+                <summary>@tool.Name</summary>
+                <p>@tool.Description</p>
+            </details>
+        }
+    </div>
+</details>
+
+<details class="side-panel" open>
+    <summary style="cursor: pointer;">
+        <h2 style="margin: 0; display: inline;">最近笔记</h2>
+    </summary>
+    <div style="margin-top: 16px;">
+        @if (State?.RecentNotes.Count > 0)
+        {
+            @foreach (var note in State.RecentNotes)
+            {
+                <article class="note">
+                    <strong>@note.Title</strong>
+                    <span>@string.Join(", ", note.Tags)</span>
+                </article>
+            }
+        }
+        else
+        {
+            <p class="muted">还没有笔记。试试让 Agent “把这个知识点记下来”。</p>
+        }
+    </div>
+</details>
+
+@code {
+    [Parameter] public IReadOnlyList<TimelineItem> TimelineItems { get; set; } = Array.Empty<TimelineItem>();
+    [Parameter] public IReadOnlyList<CommandHint> CommandHints { get; set; } = Array.Empty<CommandHint>();
+    [Parameter] public DashboardState? State { get; set; }
+
+    private static string Truncate(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        return value.Length <= max ? value : value[..max] + "...";
+    }
+}
