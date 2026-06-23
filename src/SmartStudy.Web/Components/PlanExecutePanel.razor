@@ -1,0 +1,85 @@
+@using System.Text.RegularExpressions
+@using Markdig
+@using SmartStudy.Core
+
+<section class="extension-panel">
+    <div class="panel-heading">
+        <div>
+            <h2>Plan-and-Execute</h2>
+            <p class="panel-note">先规划、再检索执行、最后用质量检查器审查最终答复。</p>
+        </div>
+        <span class="chip">Reflection</span>
+    </div>
+
+    <div class="plan-form">
+        <input value="@PlanGoal" @oninput="e => OnPlanGoalChanged(e.Value?.ToString() ?? string.Empty)" placeholder="例如：解释 ReAct Agent 并给出验收方式" />
+        <button class="primary-button" @onclick="OnRun" disabled="@(IsBusy || string.IsNullOrWhiteSpace(PlanGoal))">运行</button>
+    </div>
+
+    @if (PlanResult is not null)
+    {
+        <div class="plan-result">
+            <div class="review-banner @(PlanResult.Review.Passed ? "pass" : "warn")">
+                <strong>@(PlanResult.Review.Passed ? "Quality Review: PASS" : "Quality Review: NEEDS ATTENTION")</strong>
+                <span>@PlanResult.Review.PassedChecks.Count OK · @PlanResult.Review.Issues.Count TODO</span>
+            </div>
+            <div class="step-list">
+                @foreach (var step in PlanResult.Steps)
+                {
+                    <article class="plan-step @(step.IsSuccessful ? "ok" : "warn")">
+                        <div>
+                            <strong>@step.Name</strong>
+                            <span>@(step.IsSuccessful ? "OK" : "WARN")</span>
+                        </div>
+                        <p>@Truncate(step.Output, 360)</p>
+                    </article>
+                }
+            </div>
+            <details class="answer-preview" open>
+                <summary>最终答复</summary>
+                <div class="markdown-body">@MarkdownToMarkup(PlanResult.FinalAnswer)</div>
+            </details>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public string PlanGoal { get; set; } = "解释 ReAct Agent";
+    [Parameter] public EventCallback<string> PlanGoalChanged { get; set; }
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public EventCallback OnRun { get; set; }
+    [Parameter] public PlanExecuteResult? PlanResult { get; set; }
+
+    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .DisableHtml()
+        .Build();
+
+    private async Task OnPlanGoalChanged(string val)
+    {
+        await PlanGoalChanged.InvokeAsync(val);
+    }
+
+    private static string Truncate(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        return value.Length <= max ? value : value[..max] + "...";
+    }
+
+    private static MarkupString MarkdownToMarkup(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown))
+            return new MarkupString("<p>...</p>");
+
+        var html = Markdown.ToHtml(markdown, MarkdownPipeline);
+        return new MarkupString(SanitizeMarkdownHtml(html));
+    }
+
+    private static string SanitizeMarkdownHtml(string html)
+    {
+        html = Regex.Replace(html, @"<\s*(script|style|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(html, @"\s+on\w+\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)", "", RegexOptions.IgnoreCase);
+        html = Regex.Replace(html, @"(href|src)\s*=\s*(""|')\s*javascript:[^""']*\2", "$1=\"#\"", RegexOptions.IgnoreCase);
+        return html;
+    }
+}

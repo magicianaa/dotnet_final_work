@@ -1,0 +1,56 @@
+@using SmartStudy.Core
+
+@if (IsVisible)
+{
+    <div class="modal-overlay" @onclick="OnClose">
+        <div class="modal-content" @onclick:stopPropagation="true">
+            <button class="modal-close" title="关闭" @onclick="OnClose">&times;</button>
+            <ImportWorkbench @bind-ImportDirectory="importDirectory"
+                             @bind-ImportGlob="importGlob"
+                             ImportMessage="@importMessage"
+                             IsBusy="isBusy"
+                             OnImport="ImportMaterialsAsync" />
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsVisible { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnImportComplete { get; set; }
+    
+    [Inject] public CourseMaterialImporter Importer { get; set; } = default!;
+
+    private string importDirectory = "";
+    private string importGlob = "";
+    private string importMessage = "";
+    private bool isBusy;
+
+    private async Task ImportMaterialsAsync()
+    {
+        if (isBusy || string.IsNullOrWhiteSpace(importDirectory)) return;
+
+        isBusy = true;
+        importMessage = "正在导入资料并重建索引...";
+        try
+        {
+            var result = await Importer.ImportAsync(importDirectory, string.IsNullOrWhiteSpace(importGlob) ? null : importGlob);
+            importMessage =
+                $"成功导入 {result.FilesRead} 个文件，跳过 {result.FilesSkipped} 个文件。\n" +
+                $"索引片段数：{result.ChunksIndexed}\n" +
+                $"输出目录：{result.OutputDirectory}\n" +
+                $"导入文件：{string.Join(", ", result.ImportedSources.Take(20))}\n\n" +
+                $"资料导入完成，您可以关闭此窗口。";
+            
+            await OnImportComplete.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            importMessage = $"导入失败：{ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+}

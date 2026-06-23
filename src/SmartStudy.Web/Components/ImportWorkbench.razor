@@ -1,0 +1,49 @@
+<section class="extension-panel import-workbench">
+    <div class="panel-heading">
+        <div>
+            <h2>资料导入</h2>
+            <p class="panel-note">支持 PDF、PPTX、DOCX、XLSX、CSV、TSV、HTML、Markdown 和 TXT。</p>
+        </div>
+        <span class="chip">10 formats</span>
+    </div>
+    <div class="format-grid">
+        @foreach (var format in SupportedFormats)
+        {
+            <span>@format</span>
+        }
+    </div>
+    <div class="import-form">
+        <input value="@ImportDirectory" @oninput="e => OnDirectoryChanged(e.Value?.ToString() ?? string.Empty)" placeholder="本机资料目录，例如 C:\Course\materials" />
+        <input value="@ImportGlob" @oninput="e => OnGlobChanged(e.Value?.ToString() ?? string.Empty)" placeholder="可选：文件名过滤，例如 Lesson01" />
+        <button class="primary-button" @onclick="OnImport" disabled="@(IsBusy || string.IsNullOrWhiteSpace(ImportDirectory))">导入并重建索引</button>
+    </div>
+    @if (!string.IsNullOrWhiteSpace(ImportMessage))
+    {
+        <pre class="import-result">@ImportMessage</pre>
+    }
+</section>
+
+@code {
+    [Parameter] public string ImportDirectory { get; set; } = "";
+    [Parameter] public EventCallback<string> ImportDirectoryChanged { get; set; }
+    [Parameter] public string ImportGlob { get; set; } = "";
+    [Parameter] public EventCallback<string> ImportGlobChanged { get; set; }
+    [Parameter] public string ImportMessage { get; set; } = "";
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public EventCallback OnImport { get; set; }
+
+    private static readonly string[] SupportedFormats =
+    [
+        ".pdf", ".pptx", ".docx", ".xlsx", ".csv", ".tsv", ".html", ".htm", ".md", ".txt"
+    ];
+
+    private async Task OnDirectoryChanged(string val)
+    {
+        await ImportDirectoryChanged.InvokeAsync(val);
+    }
+
+    private async Task OnGlobChanged(string val)
+    {
+        await ImportGlobChanged.InvokeAsync(val);
+    }
+}

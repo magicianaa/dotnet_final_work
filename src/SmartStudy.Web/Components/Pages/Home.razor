@@ -1,11 +1,8 @@
 @page "/"
 @rendermode InteractiveServer
-@using System.Text.RegularExpressions
-@using Markdig
 @inject ReActAgent Agent
 @inject PlanExecuteAgent PlanExecute
 @inject KnowledgeIndexer Indexer
-@inject CourseMaterialImporter Importer
 @inject DashboardStateService Dashboard
 @inject WebAgentTraceStore TraceStore
 @implements IDisposable
@@ -29,261 +26,58 @@
         <div class="status-line">@statusMessage</div>
     }
 
-    <section class="metrics-grid">
-        <div class="metric">
-            <span>LLM</span>
-            <strong>@(state?.LlmModel ?? "loading")</strong>
-            <small>@(state?.LlmProfile ?? "-") · @(state?.LlmApiKeyConfigured == true ? "key ready" : "missing key")</small>
-        </div>
-        <div class="metric">
-            <span>Embedding</span>
-            <strong>@(state?.EmbeddingProvider ?? "loading")</strong>
-            <small>@(state?.EmbeddingModel ?? "-")</small>
-        </div>
-        <div class="metric">
-            <span>Knowledge</span>
-            <strong>@(state?.LoadedChunkCount.ToString() ?? "0") chunks</strong>
-            <small>@(state?.KnowledgeFileCount.ToString() ?? "0") markdown · @(state?.ImportedMaterialCount.ToString() ?? "0") imported</small>
-        </div>
-        <div class="metric">
-            <span>Tools</span>
-            <strong>@(state?.Tools.Count.ToString() ?? "0") registered</strong>
-            <small>@(state?.IndexFileExists == true ? $"{state.IndexFileBytes / 1024} KB index" : "index missing")</small>
-        </div>
-    </section>
+    <MetricsDashboard State="state" />
 
     <section class="main-grid">
         <div class="conversation-panel">
-            <div class="panel-heading">
-                <div>
-                    <h2>对话</h2>
-                    <p class="panel-note">对应 CLI 的 chat 模式；Web 端会在右侧展示 Agent 事件链。</p>
+            @if (isPlanMode)
+            {
+                <div class="plan-mode-panel">
+                    <PlanExecutePanel @bind-PlanGoal="planGoal"
+                                      IsBusy="isBusy"
+                                      OnRun="RunPlanExecuteAsync"
+                                      PlanResult="planResult" />
                 </div>
-                <div class="conversation-actions">
-                    <label class="toggle">
-                        <input type="checkbox" @bind="useStreaming" disabled="@isBusy" />
-                        <span>流式输出</span>
-                    </label>
-                    <button class="text-button" @onclick="ClearChat">清空</button>
-                </div>
-            </div>
+            }
 
-            <div class="messages">
-                @if (messages.Count == 0)
-                {
-                    <div class="empty-state">
-                        <strong>可以直接提问课程资料、要求生成复习计划，或让 Agent 记录笔记。</strong>
-                        <span>下方示例会触发不同工具，右侧会显示 Thought、Action、Observation 和最终答案。</span>
-                    </div>
-                }
-                @foreach (var message in messages)
-                {
-                    <article class="message @message.Role">
-                        <span>@message.Label</span>
-                        @if (message.Role.Equals("agent", StringComparison.OrdinalIgnoreCase))
-                        {
-                            <div class="markdown-body">@MarkdownToMarkup(message.Content)</div>
-                        }
-                        else
-                        {
-                            <p>@(string.IsNullOrEmpty(message.Content) ? "..." : message.Content)</p>
-                        }
-                    </article>
-                }
-            </div>
-
-            <div class="quick-prompts">
-                @foreach (var prompt in quickPrompts)
-                {
-                    <button @onclick="() => UsePrompt(prompt)">@prompt.Label</button>
-                }
-            </div>
-
-            <div class="cli-hints">
-                <strong>CLI 原有快捷能力</strong>
-                <div>
-                    @foreach (var item in commandHints.Take(8))
-                    {
-                        <button type="button" title="@item.Description" @onclick="() => UseCommandHint(item)">
-                            <code>@item.Command</code>
-                        </button>
-                    }
-                </div>
-            </div>
-
-            <EditForm Model="this" OnSubmit="AskAsync" class="ask-form">
-                <textarea @bind="question" @bind:event="oninput" placeholder="输入问题，例如：请解释 ReAct Agent 的工作流，并结合课程资料说明"></textarea>
-                <button class="primary-button" disabled="@(isBusy || string.IsNullOrWhiteSpace(question))">发送</button>
-            </EditForm>
-
-            <section class="extension-panel">
-                <div class="panel-heading">
-                    <div>
-                        <h2>Plan-and-Execute</h2>
-                        <p class="panel-note">先规划、再检索执行、最后用质量检查器审查最终答复。</p>
-                    </div>
-                    <span class="chip">Reflection</span>
-                </div>
-
-                <div class="plan-form">
-                    <input @bind="planGoal" @bind:event="oninput" placeholder="例如：解释 ReAct Agent 并给出验收方式" />
-                    <button class="primary-button" @onclick="RunPlanExecuteAsync" disabled="@(isBusy || string.IsNullOrWhiteSpace(planGoal))">运行</button>
-                </div>
-
-                @if (planResult is not null)
-                {
-                    <div class="plan-result">
-                        <div class="review-banner @(planResult.Review.Passed ? "pass" : "warn")">
-                            <strong>@(planResult.Review.Passed ? "Quality Review: PASS" : "Quality Review: NEEDS ATTENTION")</strong>
-                            <span>@planResult.Review.PassedChecks.Count OK · @planResult.Review.Issues.Count TODO</span>
-                        </div>
-                        <div class="step-list">
-                            @foreach (var step in planResult.Steps)
-                            {
-                                <article class="plan-step @(step.IsSuccessful ? "ok" : "warn")">
-                                    <div>
-                                        <strong>@step.Name</strong>
-                                        <span>@(step.IsSuccessful ? "OK" : "WARN")</span>
-                                    </div>
-                                    <p>@Truncate(step.Output, 360)</p>
-                                </article>
-                            }
-                        </div>
-                        <details class="answer-preview" open>
-                            <summary>最终答复</summary>
-                            <div class="markdown-body">@MarkdownToMarkup(planResult.FinalAnswer)</div>
-                        </details>
-                    </div>
-                }
-            </section>
-
-            <section class="extension-panel import-workbench">
-                <div class="panel-heading">
-                    <div>
-                        <h2>资料导入</h2>
-                        <p class="panel-note">支持 PDF、PPTX、DOCX、XLSX、CSV、TSV、HTML、Markdown 和 TXT。</p>
-                    </div>
-                    <span class="chip">10 formats</span>
-                </div>
-                <div class="format-grid">
-                    @foreach (var format in SupportedFormats)
-                    {
-                        <span>@format</span>
-                    }
-                </div>
-                <div class="import-form">
-                    <input @bind="importDirectory" @bind:event="oninput" placeholder="本机资料目录，例如 C:\Course\materials" />
-                    <input @bind="importGlob" @bind:event="oninput" placeholder="可选：文件名过滤，例如 Lesson01" />
-                    <button class="primary-button" @onclick="ImportMaterialsAsync" disabled="@(isBusy || string.IsNullOrWhiteSpace(importDirectory))">导入并重建索引</button>
-                </div>
-                @if (!string.IsNullOrWhiteSpace(importMessage))
-                {
-                    <pre class="import-result">@importMessage</pre>
-                }
-            </section>
+            <ChatPanel Messages="messages" 
+                       QuickPrompts="quickPrompts" 
+                       CommandHints="commandHints" 
+                       IsBusy="isBusy" 
+                       @bind-UseStreaming="useStreaming" 
+                       @bind-Question="question" 
+                       OnAsk="AskAsync" 
+                       OnClearChat="ClearChat"
+                       IsPlanMode="isPlanMode"
+                       OnTogglePlanMode="TogglePlanMode"
+                       OnShowImportModal="() => showImportModal = true" />
         </div>
 
         <aside class="inspector">
-            <section class="timeline-panel">
-                <div class="panel-heading">
-                    <h2>Agent 时间线</h2>
-                    <span>@TimelineItems.Count items</span>
-                </div>
-                <div class="timeline">
-                    @if (TimelineItems.Count == 0)
-                    {
-                        <p class="muted">运行一次提问后，这里会展示工具调用链。</p>
-                    }
-                    @foreach (var item in TimelineItems)
-                    {
-                        <article class="event @item.CssClass">
-                            <div>
-                                <strong>@item.Title</strong>
-                                <span>step @item.Step</span>
-                            </div>
-                            @if (!string.IsNullOrWhiteSpace(item.ToolName))
-                            {
-                                <code>@item.ToolName</code>
-                            }
-                            <p>@Truncate(item.Content, item.MaxChars)</p>
-                        </article>
-                    }
-                </div>
-            </section>
-
-            <section class="side-panel">
-                <h2>新增扩展验收</h2>
-                <div class="check-list">
-                    <div><strong>Plan-and-Execute</strong><span>表格展示 Plan、Execute、Review，最终 Quality Review PASS。</span></div>
-                    <div><strong>Reflection</strong><span>检查目标覆盖、资料依据、下一步和占位文本。</span></div>
-                    <div><strong>多格式导入</strong><span>XLSX/CSV/HTML 导入后生成 Markdown 并重建 RAG。</span></div>
-                </div>
-            </section>
-
-            <section class="side-panel">
-                <h2>CLI 指令参考</h2>
-                <div class="command-list">
-                    @foreach (var item in commandHints)
-                    {
-                        <div class="command-row">
-                            <code>@item.Command</code>
-                            <span>@item.Description</span>
-                        </div>
-                    }
-                </div>
-            </section>
-
-            <section class="side-panel">
-                <h2>工具</h2>
-                <div class="tool-list">
-                    @foreach (var tool in state?.Tools ?? Array.Empty<WebToolSummary>())
-                    {
-                        <details>
-                            <summary>@tool.Name</summary>
-                            <p>@tool.Description</p>
-                        </details>
-                    }
-                </div>
-            </section>
-
-            <section class="side-panel">
-                <h2>最近笔记</h2>
-                @if (state?.RecentNotes.Count > 0)
-                {
-                    @foreach (var note in state.RecentNotes)
-                    {
-                        <article class="note">
-                            <strong>@note.Title</strong>
-                            <span>@string.Join(", ", note.Tags)</span>
-                        </article>
-                    }
-                }
-                else
-                {
-                    <p class="muted">还没有笔记。试试让 Agent “把这个知识点记下来”。</p>
-                }
-            </section>
+            <TimelineInspector TimelineItems="TimelineItems"
+                               CommandHints="commandHints"
+                               State="state" />
         </aside>
     </section>
 </section>
+
+<ImportModal IsVisible="showImportModal" 
+             OnClose="() => showImportModal = false" 
+             OnImportComplete="LoadDashboardAsync" />
 
 @code {
     private DashboardState? state;
     private string question = "";
     private string planGoal = "解释 ReAct Agent";
-    private string importDirectory = "";
-    private string importGlob = "";
-    private string importMessage = "";
     private string statusMessage = "";
     private bool isBusy;
     private bool useStreaming = true;
+    private bool isPlanMode = false;
+    private bool showImportModal = false;
     private PlanExecuteResult? planResult;
     private readonly List<ChatUiMessage> messages = new();
     private IReadOnlyList<TimelineItem> TimelineItems => BuildTimelineItems(TraceStore.Events);
-    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
-        .UseAdvancedExtensions()
-        .DisableHtml()
-        .Build();
+
     private readonly QuickPrompt[] quickPrompts =
     [
         new("解释 ReAct", "请检索课程资料，并解释 ReAct Agent 的 Thought、Action、Observation 工作流。"),
@@ -308,15 +102,16 @@
         new(":calc <expression>", "调用 calculate", "请计算 (45+15)/6。"),
         new(":import <directory> | <glob>", "调用 import_course_materials", "请导入指定目录下的课程资料，并重建知识库索引。")
     ];
-    private static readonly string[] SupportedFormats =
-    [
-        ".pdf", ".pptx", ".docx", ".xlsx", ".csv", ".tsv", ".html", ".htm", ".md", ".txt"
-    ];
 
     protected override async Task OnInitializedAsync()
     {
         TraceStore.Changed += HandleTraceChanged;
         await LoadDashboardAsync();
+    }
+
+    private void TogglePlanMode()
+    {
+        isPlanMode = !isPlanMode;
     }
 
     private async Task LoadDashboardAsync()
@@ -406,35 +201,6 @@
         }
     }
 
-    private async Task ImportMaterialsAsync()
-    {
-        if (isBusy || string.IsNullOrWhiteSpace(importDirectory)) return;
-
-        isBusy = true;
-        importMessage = "";
-        statusMessage = "正在导入资料并重建索引...";
-        try
-        {
-            var result = await Importer.ImportAsync(importDirectory, string.IsNullOrWhiteSpace(importGlob) ? null : importGlob);
-            importMessage =
-                $"成功导入 {result.FilesRead} 个文件，跳过 {result.FilesSkipped} 个文件。\n" +
-                $"索引片段数：{result.ChunksIndexed}\n" +
-                $"输出目录：{result.OutputDirectory}\n" +
-                $"导入文件：{string.Join(", ", result.ImportedSources.Take(20))}";
-            statusMessage = "资料导入完成。";
-            await LoadDashboardAsync();
-        }
-        catch (Exception ex)
-        {
-            importMessage = $"导入失败：{ex.Message}";
-            statusMessage = "资料导入失败。";
-        }
-        finally
-        {
-            isBusy = false;
-        }
-    }
-
     private async Task AskStreamingAsync(string input)
     {
         var agentIndex = messages.Count;
@@ -499,16 +265,6 @@
         };
     }
 
-    private void UsePrompt(QuickPrompt prompt)
-    {
-        question = prompt.Text;
-    }
-
-    private void UseCommandHint(CommandHint hint)
-    {
-        question = hint.Prompt;
-    }
-
     private void ClearChat()
     {
         messages.Clear();
@@ -519,12 +275,6 @@
     private void HandleTraceChanged()
     {
         _ = InvokeAsync(StateHasChanged);
-    }
-
-    private static string Truncate(string? value, int max)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return "";
-        return value.Length <= max ? value : value[..max] + "...";
     }
 
     private static IReadOnlyList<TimelineItem> BuildTimelineItems(IReadOnlyList<AgentEvent> events)
@@ -578,30 +328,8 @@
         stream.Clear();
     }
 
-    private static MarkupString MarkdownToMarkup(string? markdown)
-    {
-        if (string.IsNullOrWhiteSpace(markdown))
-            return new MarkupString("<p>...</p>");
-
-        var html = Markdown.ToHtml(markdown, MarkdownPipeline);
-        return new MarkupString(SanitizeMarkdownHtml(html));
-    }
-
-    private static string SanitizeMarkdownHtml(string html)
-    {
-        html = Regex.Replace(html, @"<\s*(script|style|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        html = Regex.Replace(html, @"\s+on\w+\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)", "", RegexOptions.IgnoreCase);
-        html = Regex.Replace(html, @"(href|src)\s*=\s*(""|')\s*javascript:[^""']*\2", "$1=\"#\"", RegexOptions.IgnoreCase);
-        return html;
-    }
-
     public void Dispose()
     {
         TraceStore.Changed -= HandleTraceChanged;
     }
-
-    private sealed record ChatUiMessage(string Role, string Label, string Content);
-    private sealed record QuickPrompt(string Label, string Text);
-    private sealed record CommandHint(string Command, string Description, string Prompt);
-    private sealed record TimelineItem(int Step, string Title, string CssClass, string? ToolName, string? Content, int MaxChars);
 }
