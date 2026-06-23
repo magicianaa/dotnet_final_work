@@ -81,7 +81,10 @@ h2 {
 .header-actions,
 .panel-heading,
 .ask-form,
-.quick-prompts {
+.quick-prompts,
+.cli-hints div,
+.conversation-actions,
+.toggle {
     display: flex;
     align-items: center;
     gap: 10px;
@@ -95,7 +98,8 @@ h2 {
 .primary-button,
 .icon-button,
 .text-button,
-.quick-prompts button {
+.quick-prompts button,
+.cli-hints button {
     min-height: 38px;
     border-radius: 8px;
     border: 1px solid transparent;
@@ -117,7 +121,8 @@ h2 {
 }
 
 .text-button,
-.quick-prompts button {
+.quick-prompts button,
+.cli-hints button {
     background: var(--surface-2);
     border-color: var(--line);
     color: var(--ink);
@@ -179,7 +184,9 @@ h2 {
     display: grid;
     grid-template-columns: minmax(0, 1.35fr) minmax(340px, .65fr);
     gap: 14px;
-    align-items: start;
+    align-items: stretch;
+    height: 1040px;
+    min-height: 780px;
 }
 
 .conversation-panel,
@@ -189,9 +196,10 @@ h2 {
 }
 
 .conversation-panel {
-    min-height: 680px;
+    height: 100%;
+    min-height: 0;
     display: grid;
-    grid-template-rows: auto minmax(380px, 1fr) auto auto;
+    grid-template-rows: auto minmax(0, 1fr) auto auto auto;
     gap: 14px;
 }
 
@@ -199,12 +207,42 @@ h2 {
     justify-content: space-between;
 }
 
+.conversation-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.toggle {
+    min-height: 38px;
+    padding: 0 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fbfcfd;
+    color: var(--ink);
+    font-weight: 700;
+}
+
+.toggle input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+}
+
+.panel-note {
+    margin: 4px 0 0;
+    color: var(--muted);
+    font-size: 13px;
+}
+
 .messages {
-    overflow: auto;
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
     display: grid;
     align-content: start;
     gap: 12px;
-    padding-right: 4px;
+    padding: 2px 6px 2px 0;
+    scrollbar-width: thin;
 }
 
 .empty-state {
@@ -239,6 +277,11 @@ h2 {
     background: #f8fafc;
 }
 
+.message.streaming {
+    border-color: #b7ddd7;
+    background: #f3fbf9;
+}
+
 .message.error {
     border-color: #f6b4ac;
     color: var(--danger);
@@ -249,8 +292,125 @@ h2 {
     overflow-wrap: anywhere;
 }
 
+.markdown-body {
+    display: grid;
+    gap: 10px;
+    overflow-wrap: anywhere;
+}
+
+.markdown-body p,
+.markdown-body ul,
+.markdown-body pre,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body table {
+    margin: 0;
+}
+
+.markdown-body h3 {
+    font-size: 17px;
+    line-height: 1.35;
+}
+
+.markdown-body h4 {
+    font-size: 15px;
+    line-height: 1.35;
+}
+
+.markdown-body ul {
+    padding-left: 20px;
+}
+
+.markdown-body ol {
+    margin: 0;
+    padding-left: 22px;
+}
+
+.markdown-body li + li {
+    margin-top: 4px;
+}
+
+.markdown-body code {
+    padding: 2px 5px;
+    border-radius: 5px;
+    background: #e7edf1;
+    color: #263238;
+    font-size: 13px;
+}
+
+.markdown-body pre {
+    overflow: auto;
+    padding: 10px;
+    border-radius: 8px;
+    background: #172026;
+    color: #eef4f6;
+}
+
+.markdown-body pre code {
+    padding: 0;
+    background: transparent;
+    color: inherit;
+}
+
+.markdown-body table {
+    width: 100%;
+    border-collapse: collapse;
+    overflow: hidden;
+    border-radius: 8px;
+    font-size: 14px;
+}
+
+.markdown-body th,
+.markdown-body td {
+    border: 1px solid var(--line);
+    padding: 8px;
+    text-align: left;
+    vertical-align: top;
+}
+
+.markdown-body th {
+    background: var(--surface-2);
+}
+
+.markdown-body blockquote {
+    margin: 0;
+    padding: 8px 12px;
+    border-left: 4px solid var(--accent);
+    background: #f3fbf9;
+    color: #33414a;
+}
+
 .quick-prompts {
     flex-wrap: wrap;
+}
+
+.cli-hints {
+    display: grid;
+    gap: 8px;
+    padding: 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: #fbfcfd;
+}
+
+.cli-hints strong {
+    font-size: 13px;
+}
+
+.cli-hints div {
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.cli-hints button {
+    min-height: 32px;
+    padding: 0 10px;
+}
+
+.cli-hints code,
+.command-row code {
+    font-size: 12px;
+    color: #1f4f5f;
 }
 
 .ask-form {
@@ -274,14 +434,26 @@ h2 {
 .inspector {
     display: grid;
     gap: 14px;
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+    grid-template-rows: minmax(300px, 1.15fr) minmax(220px, .85fr) minmax(260px, 1fr) minmax(140px, .55fr);
 }
 
 .timeline {
-    max-height: 390px;
+    max-height: none;
+    min-height: 0;
+    height: calc(100% - 34px);
     overflow: auto;
     display: grid;
     gap: 10px;
     margin-top: 12px;
+}
+
+.timeline-panel,
+.side-panel {
+    min-height: 0;
+    overflow: hidden;
 }
 
 .event {
@@ -301,6 +473,11 @@ h2 {
 
 .event.finalanswer {
     border-color: var(--accent-2);
+}
+
+.event.streaming-answer {
+    border-color: #14b8a6;
+    background: #f0fdfa;
 }
 
 .event.error {
@@ -336,8 +513,30 @@ h2 {
 .tool-list {
     display: grid;
     gap: 8px;
-    max-height: 360px;
+    max-height: none;
+    height: calc(100% - 34px);
     overflow: auto;
+}
+
+.command-list {
+    display: grid;
+    gap: 8px;
+    max-height: none;
+    height: calc(100% - 34px);
+    overflow: auto;
+}
+
+.command-row {
+    display: grid;
+    grid-template-columns: minmax(110px, .75fr) minmax(0, 1fr);
+    gap: 10px;
+    align-items: start;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+}
+
+.command-row span {
+    color: var(--muted);
 }
 
 details {
@@ -389,10 +588,26 @@ details p {
 
     .main-grid {
         grid-template-columns: 1fr;
+        height: auto;
+        min-height: 0;
     }
 
     .conversation-panel {
-        min-height: 560px;
+        height: 860px;
+        min-height: 640px;
+    }
+
+    .inspector {
+        height: auto;
+        overflow: visible;
+        grid-template-rows: none;
+    }
+
+    .timeline,
+    .tool-list,
+    .command-list {
+        max-height: 360px;
+        height: auto;
     }
 }
 
@@ -408,6 +623,12 @@ details p {
         flex-direction: column;
     }
 
+    .panel-heading,
+    .conversation-actions {
+        align-items: stretch;
+        flex-direction: column;
+    }
+
     h1 {
         font-size: 26px;
     }
@@ -418,5 +639,18 @@ details p {
 
     .message {
         max-width: 100%;
+    }
+
+    .conversation-panel {
+        height: 760px;
+        min-height: 0;
+    }
+
+    .messages {
+        max-height: 440px;
+    }
+
+    .command-row {
+        grid-template-columns: 1fr;
     }
 }

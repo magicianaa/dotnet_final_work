@@ -1,5 +1,7 @@
 @page "/"
 @rendermode InteractiveServer
+@using System.Text.RegularExpressions
+@using Markdig
 @inject ReActAgent Agent
 @inject KnowledgeIndexer Indexer
 @inject DashboardStateService Dashboard
@@ -51,8 +53,17 @@
     <section class="main-grid">
         <div class="conversation-panel">
             <div class="panel-heading">
-                <h2>对话</h2>
-                <button class="text-button" @onclick="ClearChat">清空</button>
+                <div>
+                    <h2>对话</h2>
+                    <p class="panel-note">对应 CLI 的 chat 模式；Web 端会在右侧展示 Agent 事件链。</p>
+                </div>
+                <div class="conversation-actions">
+                    <label class="toggle">
+                        <input type="checkbox" @bind="useStreaming" disabled="@isBusy" />
+                        <span>流式输出</span>
+                    </label>
+                    <button class="text-button" @onclick="ClearChat">清空</button>
+                </div>
             </div>
 
             <div class="messages">
@@ -67,7 +78,14 @@
                 {
                     <article class="message @message.Role">
                         <span>@message.Label</span>
-                        <p>@message.Content</p>
+                        @if (message.Role.Equals("agent", StringComparison.OrdinalIgnoreCase))
+                        {
+                            <div class="markdown-body">@MarkdownToMarkup(message.Content)</div>
+                        }
+                        else
+                        {
+                            <p>@(string.IsNullOrEmpty(message.Content) ? "..." : message.Content)</p>
+                        }
                     </article>
                 }
             </div>
@@ -79,8 +97,20 @@
                 }
             </div>
 
+            <div class="cli-hints">
+                <strong>CLI 原有快捷能力</strong>
+                <div>
+                    @foreach (var item in commandHints.Take(8))
+                    {
+                        <button type="button" title="@item.Description" @onclick="() => UseCommandHint(item)">
+                            <code>@item.Command</code>
+                        </button>
+                    }
+                </div>
+            </div>
+
             <EditForm Model="this" OnSubmit="AskAsync" class="ask-form">
-                <InputTextArea @bind-Value="question" placeholder="输入问题，例如：请解释 ReAct Agent 的工作流，并结合课程资料说明" />
+                <textarea @bind="question" @bind:event="oninput" placeholder="输入问题，例如：请解释 ReAct Agent 的工作流，并结合课程资料说明"></textarea>
                 <button class="primary-button" disabled="@(isBusy || string.IsNullOrWhiteSpace(question))">发送</button>
             </EditForm>
         </div>
@@ -89,26 +119,39 @@
             <section class="timeline-panel">
                 <div class="panel-heading">
                     <h2>Agent 时间线</h2>
-                    <span>@TraceStore.Events.Count events</span>
+                    <span>@TimelineItems.Count items</span>
                 </div>
                 <div class="timeline">
-                    @if (TraceStore.Events.Count == 0)
+                    @if (TimelineItems.Count == 0)
                     {
                         <p class="muted">运行一次提问后，这里会展示工具调用链。</p>
                     }
-                    @foreach (var ev in TraceStore.Events)
+                    @foreach (var item in TimelineItems)
                     {
-                        <article class="event @ev.Type.ToString().ToLowerInvariant()">
+                        <article class="event @item.CssClass">
                             <div>
-                                <strong>@ev.Type</strong>
-                                <span>step @ev.Step</span>
+                                <strong>@item.Title</strong>
+                                <span>step @item.Step</span>
                             </div>
-                            @if (!string.IsNullOrWhiteSpace(ev.ToolName))
+                            @if (!string.IsNullOrWhiteSpace(item.ToolName))
                             {
-                                <code>@ev.ToolName</code>
+                                <code>@item.ToolName</code>
                             }
-                            <p>@Truncate(ev.Content, ev.Type == AgentEventType.Observation ? 360 : 220)</p>
+                            <p>@Truncate(item.Content, item.MaxChars)</p>
                         </article>
+                    }
+                </div>
+            </section>
+
+            <section class="side-panel">
+                <h2>CLI 指令参考</h2>
+                <div class="command-list">
+                    @foreach (var item in commandHints)
+                    {
+                        <div class="command-row">
+                            <code>@item.Command</code>
+                            <span>@item.Description</span>
+                        </div>
                     }
                 </div>
             </section>
@@ -152,12 +195,35 @@
     private string question = "";
     private string statusMessage = "";
     private bool isBusy;
+    private bool useStreaming = true;
     private readonly List<ChatUiMessage> messages = new();
+    private IReadOnlyList<TimelineItem> TimelineItems => BuildTimelineItems(TraceStore.Events);
+    private static readonly MarkdownPipeline MarkdownPipeline = new MarkdownPipelineBuilder()
+        .UseAdvancedExtensions()
+        .DisableHtml()
+        .Build();
     private readonly QuickPrompt[] quickPrompts =
     [
         new("解释 ReAct", "请检索课程资料，并解释 ReAct Agent 的 Thought、Action、Observation 工作流。"),
         new("生成计划", "我对 ReAct 和 MCP 比较薄弱，目标是完成期末答辩，请更新我的学习画像并制定 3 天复习计划。"),
-        new("出练习题", "请基于课程资料生成 3 道关于 Agent Loop 的选择题。")
+        new("出练习题", "请基于课程资料生成 3 道关于 Agent Loop 的选择题。"),
+        new("查看进度", "请查看我的学习进度和最近完成记录。"),
+        new("错题复盘", "请列出我的错题，并按主题总结薄弱点。")
+    ];
+    private readonly CommandHint[] commandHints =
+    [
+        new(":reset", "清空对话记忆", "请忽略当前上下文，重新开始一次新的学习对话。"),
+        new(":models", "查看模型列表", "请说明当前可用的 LLM profiles，以及当前模型是哪一个。"),
+        new(":multi <goal>", "启动 Multi-Agent 协作", "请用 Multi-Agent 协作方式帮我准备 Agent 项目答辩。"),
+        new(":search <query>", "调用 knowledge_search", "请检索课程知识库，查询 ReAct Agent 的工作流。"),
+        new(":profile", "查看学习画像", "请查看我当前的学习画像。"),
+        new(":plan <goal>", "调用 study_plan", "请基于我的学习画像制定一个 3 天期末答辩复习计划。"),
+        new(":progress", "调用 show_progress", "请查看我的学习任务进度和完成历史。"),
+        new(":quiz <material> | <count>", "调用 make_quiz", "请基于课程资料生成 3 道关于 Agent Loop 的练习题。"),
+        new(":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer", "我想提交练习题答案，请引导我按 quizId、题号和答案作答。"),
+        new(":mistakes [topic]", "调用 show_mistakes", "请查看我的错题记录，并按主题总结需要复习的地方。"),
+        new(":calc <expression>", "调用 calculate", "请计算 (45+15)/6。"),
+        new(":import <directory> | <glob>", "调用 import_course_materials", "请导入指定目录下的课程资料，并重建知识库索引。")
     ];
 
     protected override async Task OnInitializedAsync()
@@ -204,9 +270,16 @@
 
         try
         {
-            var result = await Agent.RunAsync(input);
-            messages.Add(new ChatUiMessage("agent", "SmartStudy", result.FinalAnswer));
-            statusMessage = result.ReachedLimit ? "已达到最大推理步数。" : $"完成，共 {result.Steps} 步。";
+            if (useStreaming)
+            {
+                await AskStreamingAsync(input);
+            }
+            else
+            {
+                var result = await Agent.RunAsync(input);
+                messages.Add(new ChatUiMessage("agent", "SmartStudy", result.FinalAnswer));
+                statusMessage = result.ReachedLimit ? "已达到最大推理步数。" : $"完成，共 {result.Steps} 步。";
+            }
             await LoadDashboardAsync();
         }
         catch (Exception ex)
@@ -220,9 +293,78 @@
         }
     }
 
+    private async Task AskStreamingAsync(string input)
+    {
+        var agentIndex = messages.Count;
+        messages.Add(new ChatUiMessage("agent streaming", "SmartStudy", ""));
+        var finalSteps = 0;
+        var reachedLimit = false;
+
+        await foreach (var ev in Agent.RunStreamingAsync(input))
+        {
+            TraceStore.Add(ev);
+            finalSteps = Math.Max(finalSteps, ev.Step);
+            switch (ev.Type)
+            {
+                case AgentEventType.StreamDelta:
+                    AppendToAgentMessage(agentIndex, ev.Content ?? "");
+                    await InvokeAsync(StateHasChanged);
+                    break;
+                case AgentEventType.FinalAnswer:
+                    UpdateAgentMessage(agentIndex, string.IsNullOrWhiteSpace(ev.Content)
+                        ? messages[agentIndex].Content
+                        : ev.Content);
+                    await InvokeAsync(StateHasChanged);
+                    break;
+                case AgentEventType.Error:
+                    reachedLimit = string.Equals(ev.Content, "达到最大循环步数", StringComparison.OrdinalIgnoreCase);
+                    if (string.IsNullOrWhiteSpace(messages[agentIndex].Content))
+                        UpdateAgentMessage(agentIndex, ev.Content ?? "Agent 运行出错。");
+                    break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(messages[agentIndex].Content))
+            UpdateAgentMessage(agentIndex, "Agent 没有返回文本内容，请查看右侧时间线中的工具调用结果。");
+
+        statusMessage = reachedLimit ? "已达到最大推理步数。" : $"流式输出完成，共 {finalSteps} 步。";
+        if (!string.IsNullOrWhiteSpace(messages[agentIndex].Content)
+            && !messages[agentIndex].Role.Contains("error", StringComparison.OrdinalIgnoreCase))
+        {
+            UpdateAgentMessage(agentIndex, messages[agentIndex].Content);
+        }
+    }
+
+    private void AppendToAgentMessage(int index, string delta)
+    {
+        if (index < 0 || index >= messages.Count || delta.Length == 0) return;
+        var current = messages[index];
+        messages[index] = current with
+        {
+            Role = "agent streaming",
+            Content = current.Content + delta
+        };
+    }
+
+    private void UpdateAgentMessage(int index, string content)
+    {
+        if (index < 0 || index >= messages.Count) return;
+        var current = messages[index];
+        messages[index] = current with
+        {
+            Role = current.Role.Contains("error", StringComparison.OrdinalIgnoreCase) ? current.Role : "agent",
+            Content = content
+        };
+    }
+
     private void UsePrompt(QuickPrompt prompt)
     {
         question = prompt.Text;
+    }
+
+    private void UseCommandHint(CommandHint hint)
+    {
+        question = hint.Prompt;
     }
 
     private void ClearChat()
@@ -243,6 +385,74 @@
         return value.Length <= max ? value : value[..max] + "...";
     }
 
+    private static IReadOnlyList<TimelineItem> BuildTimelineItems(IReadOnlyList<AgentEvent> events)
+    {
+        var items = new List<TimelineItem>();
+        var stream = new System.Text.StringBuilder();
+        int? streamStep = null;
+
+        foreach (var ev in events)
+        {
+            if (ev.Type == AgentEventType.StreamDelta)
+            {
+                streamStep ??= ev.Step;
+                if (streamStep == ev.Step)
+                {
+                    stream.Append(ev.Content);
+                    continue;
+                }
+
+                FlushStream(items, streamStep.Value, stream);
+                streamStep = ev.Step;
+                stream.Append(ev.Content);
+                continue;
+            }
+
+            if (streamStep.HasValue)
+            {
+                FlushStream(items, streamStep.Value, stream);
+                streamStep = null;
+            }
+
+            items.Add(new TimelineItem(
+                ev.Step,
+                ev.Type.ToString(),
+                ev.Type.ToString().ToLowerInvariant(),
+                ev.ToolName,
+                ev.Content,
+                ev.Type == AgentEventType.Observation ? 520 : 300));
+        }
+
+        if (streamStep.HasValue)
+            FlushStream(items, streamStep.Value, stream);
+
+        return items;
+    }
+
+    private static void FlushStream(List<TimelineItem> items, int step, System.Text.StringBuilder stream)
+    {
+        if (stream.Length == 0) return;
+        items.Add(new TimelineItem(step, "Streaming Answer", "streaming-answer", null, stream.ToString(), 520));
+        stream.Clear();
+    }
+
+    private static MarkupString MarkdownToMarkup(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown))
+            return new MarkupString("<p>...</p>");
+
+        var html = Markdown.ToHtml(markdown, MarkdownPipeline);
+        return new MarkupString(SanitizeMarkdownHtml(html));
+    }
+
+    private static string SanitizeMarkdownHtml(string html)
+    {
+        html = Regex.Replace(html, @"<\s*(script|style|iframe|object|embed|form)[^>]*>.*?<\s*/\s*\1\s*>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        html = Regex.Replace(html, @"\s+on\w+\s*=\s*(""[^""]*""|'[^']*'|[^\s>]+)", "", RegexOptions.IgnoreCase);
+        html = Regex.Replace(html, @"(href|src)\s*=\s*(""|')\s*javascript:[^""']*\2", "$1=\"#\"", RegexOptions.IgnoreCase);
+        return html;
+    }
+
     public void Dispose()
     {
         TraceStore.Changed -= HandleTraceChanged;
@@ -250,4 +460,6 @@
 
     private sealed record ChatUiMessage(string Role, string Label, string Content);
     private sealed record QuickPrompt(string Label, string Text);
+    private sealed record CommandHint(string Command, string Description, string Prompt);
+    private sealed record TimelineItem(int Step, string Title, string CssClass, string? ToolName, string? Content, int MaxChars);
 }

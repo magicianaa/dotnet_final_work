@@ -361,6 +361,34 @@ src/SmartStudy.Cli/bin/Debug/net8.0/knowledge/imported/
 
 发布运行后，数据位于发布目录下的 `data/` 和 `knowledge/`。其中学习笔记保存为 `data/notes.json`，长期学习画像保存为 `data/learning-profile.json`。
 
+## 运行 Blazor Web 前端
+
+Web 前端位于 `src/SmartStudy.Web`，提供 Agent 对话、工具时间线、知识库状态、工具清单和最近笔记面板。
+
+在项目根目录启动：
+
+```powershell
+dotnet run --project src\SmartStudy.Web\SmartStudy.Web.csproj --urls http://localhost:5178
+```
+
+启动后浏览器打开：
+
+```text
+http://localhost:5178
+```
+
+如果已经构建过，可以用 `--no-build` 快速启动：
+
+```powershell
+dotnet run --no-build --project src\SmartStudy.Web\SmartStudy.Web.csproj --urls http://localhost:5178
+```
+
+如果 `5178` 端口被占用，可以换一个端口：
+
+```powershell
+dotnet run --project src\SmartStudy.Web\SmartStudy.Web.csproj --urls http://localhost:5188
+```
+
 ## MCP Server
 
 启动 MCP stdio Server：
