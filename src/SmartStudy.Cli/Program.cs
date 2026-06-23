@@ -40,7 +40,7 @@ host.Services.AddSingleton<IEmbeddingClient>(sp =>
         : sp.GetRequiredService<ZhipuEmbeddingClient>();
 });
 
-host.Services.AddSingleton<IVectorStore, InMemoryVectorStore>();
+host.Services.AddSingleton<IVectorStore, JsonPersistentVectorStore>();
 host.Services.AddSingleton<KnowledgeIndexer>();
 host.Services.AddSingleton<KnowledgeSearchService>();
 host.Services.AddSingleton<CourseMaterialCatalog>();
@@ -296,7 +296,8 @@ static async Task RunDoctor(IServiceProvider sp)
     summary.AddRow("LLM BaseUrl", snapshot.CurrentLlmBaseUrl);
     summary.AddRow("Embedding", $"{snapshot.EmbeddingProvider} ({snapshot.EmbeddingModel})");
     summary.AddRow("Knowledge", $"{snapshot.MarkdownFileCount} markdown, {snapshot.ImportedMaterialCount} imported");
-    summary.AddRow("Index", snapshot.IndexFileExists ? $"{snapshot.LoadedChunkCount} chunks, {snapshot.IndexFileBytes} bytes" : "missing");
+    summary.AddRow("Vector Store", $"{snapshot.VectorStoreKind} ({snapshot.LoadedChunkCount} chunks)");
+    summary.AddRow("Index", snapshot.IndexFileExists ? $"{snapshot.IndexFileBytes} bytes" : "missing");
     summary.AddRow("Notes", snapshot.NotesFileExists ? $"{snapshot.NoteCount} notes" : "not created");
     summary.AddRow("Learning Profile", snapshot.LearningProfileFileExists ? "created" : "not created");
     summary.AddRow("Tools", snapshot.Tools.Count.ToString());

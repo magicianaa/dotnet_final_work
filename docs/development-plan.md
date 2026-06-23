@@ -21,10 +21,10 @@ PDF 还鼓励实现 RAG、MCP、Streaming、可观测性和单元测试。当前
 | LLM | 支持多 profile 切换，`--llm` 与 `:model` 可切换模型 | 增加模型连通性自检命令 |
 | Agent Loop | 支持多步工具调用、最大步数限制、错误 observation | 增加更细的失败诊断与演示脚本 |
 | Tools | 已有检索、精读资料、导入资料、笔记、学习画像、学习进度、错题本、复习计划、出题、计算 | 后续可继续增加模型连通性自检 |
-| RAG | 支持云端 embedding 与本地 Hash Embedding，检索输出含来源标注 | 可以增加更细的页码/章节引用 |
+| RAG | 支持云端 embedding 与本地 Hash Embedding，`JsonPersistentVectorStore` 持久化索引快照，检索输出含来源标注 | 可以增加更细的页码/章节引用 |
 | CLI | 支持中文行内编辑、流式输出、模型切换 | 可以增加 `/help` 或命令帮助面板 |
 | MCP | 暴露笔记、知识库检索和资料清单 MCP 工具 | 可以继续扩展学习画像 MCP 工具 |
-| Tests | 41 个测试覆盖核心逻辑 | 继续覆盖新功能和边界情况 |
+| Tests | 43 个测试覆盖核心逻辑 | 继续覆盖新功能和边界情况 |
 | Docs | README、架构文档、反思报告、开发计划已同步 | 后续可补充更完整的答辩讲稿 |
 
 ## 3. 后续迭代路线
@@ -113,7 +113,7 @@ PDF 还鼓励实现 RAG、MCP、Streaming、可观测性和单元测试。当前
 11. 新增 `update_learning_profile`、`show_learning_profile`、`study_plan` 三个 Agent 工具。
 12. 在 CLI DI 和 system prompt 中注册学习画像与复习计划能力。
 13. 更新 `doctor/status`，展示 `learning-profile.json` 是否已创建。
-14. 将单元测试扩展到 36 个，覆盖学习画像、画像补参兜底、复习计划、学习进度、错题本和来源标注。
+14. 将单元测试扩展到 41 个，覆盖学习画像、画像补参兜底、复习计划、学习进度、错题本、来源标注、Multi-Agent、Plan-and-Execute、多格式资料导入和持久化向量存储。
 15. 新增 `docs/demo-script.md`，覆盖构建、测试、doctor、tools、RAG、课件精读、笔记、学习画像、复习计划、Streaming、MCP 和答辩 FAQ。
 16. 更新 README 和开发计划，使交付文档目录与当前源码能力一致。
 17. 新增 `docs/team-iteration-plan.md`，按照 4 人分工设计 7 天迭代节奏，突出以人分任务而不是机械按天分任务。
@@ -199,6 +199,24 @@ Quality Review: PASS
 3. XLSX 抽取 Sheet 名称和单元格文本。
 4. 导入后生成 Markdown 并重建 RAG 索引。
 5. `CourseMaterialImporterExtendedFormatTests.ImportsCsvHtmlAndXlsxMaterials` 通过。
+
+### 6.4 持久化向量存储
+
+实现文件：
+
+- `src/SmartStudy.Core/Rag/VectorStore.cs`
+- `src/SmartStudy.Cli/SmartStudyDoctor.cs`
+- `src/SmartStudy.Cli/Program.cs`
+- `src/SmartStudy.Mcp/Program.cs`
+
+验收标准：
+
+1. CLI 和 MCP 默认注入 `JsonPersistentVectorStore`。
+2. 执行 `index` 后生成 `data/index.json` 持久化快照，包含 `version`、`createdUtc`、`chunkCount`、`chunks`。
+3. 新建 `JsonPersistentVectorStore` 实例可以从同一个 `index.json` 重新加载 chunk 并完成相似度检索。
+4. 旧数组格式 `index.json` 仍能加载，避免破坏已有索引。
+5. `doctor` 输出包含 `Vector Store = JsonPersistent`、持久化路径和已加载 chunk 数。
+6. `JsonPersistentVectorStoreTests` 和 `SmartStudyDoctorTests` 通过。
 
 ## 7. 风险与应对
 

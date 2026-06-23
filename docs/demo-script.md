@@ -25,7 +25,7 @@ dotnet test SmartStudy.sln --no-build --nologo
 
 ```text
 Build: 0 warning, 0 error
-Tests: 36/36 passed
+Tests: 43/43 passed
 ```
 
 如果现场网络不稳定，建议切到本地 RAG：
@@ -64,6 +64,7 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- doctor
 - `doctor` 会显示当前 LLM profile、Embedding provider、知识库、索引、笔记、学习画像和工具数量。
 - 如果看到 `Tools = 17`，说明所有 Agent 工具都已成功注册。
 - 如果看到 `Embedding = local`，说明 RAG 检索不依赖云端 embedding，适合现场演示。
+- 如果看到 `Vector Store = JsonPersistent`，说明 RAG 索引已经持久化到 `data/index.json`，程序重启后可以直接加载。
 
 ### 2:00 - 3:00 展示工具注册
 
@@ -326,7 +327,7 @@ Quality Review: PASS
 
 ### Q4：RAG 是怎么实现的？
 
-`KnowledgeIndexer` 读取 `knowledge/*.md` 并切分 chunk，`IEmbeddingClient` 生成向量，`InMemoryVectorStore` 用余弦相似度检索最相关片段。Embedding 可以使用智谱 `embedding-3`，也可以切到本地 `LocalHashEmbeddingClient`，避免现场演示受网络影响。
+`KnowledgeIndexer` 读取 `knowledge/*.md` 并切分 chunk，`IEmbeddingClient` 生成向量，`JsonPersistentVectorStore` 把向量快照保存到 `data/index.json`，启动后重新加载，再用余弦相似度检索最相关片段。Embedding 可以使用智谱 `embedding-3`，也可以切到本地 `LocalHashEmbeddingClient`，避免现场演示受网络影响。
 
 ### Q4.1：为什么这个功能叫 Multi-Agent？
 

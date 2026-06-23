@@ -26,6 +26,8 @@ public sealed record SmartStudyDoctorSnapshot(
     string IndexFile,
     bool IndexFileExists,
     long IndexFileBytes,
+    string VectorStoreKind,
+    string? VectorStorePersistencePath,
     int LoadedChunkCount,
     string NotesFile,
     bool NotesFileExists,
@@ -82,6 +84,7 @@ public sealed class SmartStudyDoctor
             .ToList();
 
         var loadedChunkCount = _store.Count;
+        var storePath = _store.PersistencePath ?? indexFile;
         var statuses = new List<DoctorStatusItem>
         {
             new(
@@ -107,7 +110,14 @@ public sealed class SmartStudyDoctor
                 "RAG Index File",
                 indexExists ? $"{indexBytes} bytes" : "missing",
                 indexExists,
-                indexExists ? $"索引文件存在；当前内存已加载 chunk {loadedChunkCount} 个。" : $"索引文件不存在：{indexFile}"),
+                indexExists
+                    ? $"持久化索引快照存在；{_store.StoreKind} 已加载 chunk {loadedChunkCount} 个。路径：{storePath}"
+                    : $"索引文件不存在：{indexFile}"),
+            new(
+                "Vector Store",
+                _store.StoreKind,
+                _store.StoreKind.Contains("Persistent", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(storePath),
+                $"向量库类型：{_store.StoreKind}；持久化路径：{storePath}"),
             new(
                 "Tool Registry",
                 $"{tools.Count} tools",
@@ -141,6 +151,8 @@ public sealed class SmartStudyDoctor
             indexFile,
             indexExists,
             indexBytes,
+            _store.StoreKind,
+            storePath,
             loadedChunkCount,
             notesFile,
             File.Exists(notesFile),
