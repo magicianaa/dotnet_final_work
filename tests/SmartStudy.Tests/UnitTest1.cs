@@ -286,6 +286,78 @@ public class InMemoryVectorStoreTests
     }
 }
 
+public class JsonPersistentVectorStoreTests
+{
+    [Fact]
+    public async Task PersistsChunksAndReloadsInNewStoreInstance()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-persistent-vector-test-" + Guid.NewGuid().ToString("N"));
+        var indexFile = Path.Combine(root, "data", "index.json");
+
+        try
+        {
+            var store = new JsonPersistentVectorStore();
+            store.Replace(new[]
+            {
+                new KnowledgeChunk { Id = "react#0", Source = "react.md", Text = "ReAct Agent 调用工具。", Vector = new float[] { 1, 0 } },
+                new KnowledgeChunk { Id = "db#0", Source = "db.md", Text = "数据库事务。", Vector = new float[] { 0, 1 } }
+            });
+
+            await store.SaveAsync(indexFile);
+
+            var reloaded = new JsonPersistentVectorStore();
+            await reloaded.LoadAsync(indexFile);
+            var results = reloaded.Search(new float[] { 1, 0 }, 1);
+
+            Assert.Equal("JsonPersistent", reloaded.StoreKind);
+            Assert.Equal(Path.GetFullPath(indexFile), reloaded.PersistencePath);
+            Assert.Equal(2, reloaded.Count);
+            Assert.Equal("react#0", results[0].Chunk.Id);
+
+            using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(indexFile));
+            Assert.Equal(JsonValueKind.Object, doc.RootElement.ValueKind);
+            Assert.Equal(2, doc.RootElement.GetProperty("chunkCount").GetInt32());
+            Assert.True(doc.RootElement.TryGetProperty("chunks", out _));
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task LoadsLegacyArrayIndexFormat()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-legacy-vector-test-" + Guid.NewGuid().ToString("N"));
+        var indexFile = Path.Combine(root, "index.json");
+
+        try
+        {
+            Directory.CreateDirectory(root);
+            await File.WriteAllTextAsync(indexFile, """
+            [
+              {
+                "id": "legacy#0",
+                "source": "legacy.md",
+                "text": "旧索引格式",
+                "vector": [1, 0, 0]
+              }
+            ]
+            """);
+
+            var store = new JsonPersistentVectorStore();
+            await store.LoadAsync(indexFile);
+
+            Assert.Equal(1, store.Count);
+            Assert.Equal("legacy#0", store.Chunks[0].Id);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+}
+
 public class LocalHashEmbeddingClientTests
 {
     [Fact]
@@ -496,12 +568,13 @@ public class SmartStudyDoctorTests
 
         try
         {
-            var store = new InMemoryVectorStore();
+            var store = new JsonPersistentVectorStore();
             store.Replace(new[]
             {
                 new KnowledgeChunk { Id = "c1", Source = "base.md", Text = "ReAct", Vector = new float[] { 1 } }
             });
             await store.SaveAsync(Path.Combine(data, "index.json"));
+            await store.LoadAsync(Path.Combine(data, "index.json"));
 
             var options = Options.Create(new AgentOptions
             {
@@ -534,7 +607,10 @@ public class SmartStudyDoctorTests
             Assert.Equal(2, snapshot.MarkdownFileCount);
             Assert.Equal(1, snapshot.ImportedMaterialCount);
             Assert.Equal(1, snapshot.LoadedChunkCount);
+            Assert.Equal("JsonPersistent", snapshot.VectorStoreKind);
+            Assert.Equal(Path.GetFullPath(Path.Combine(data, "index.json")), snapshot.VectorStorePersistencePath);
             Assert.Equal(3, snapshot.Tools.Count);
+            Assert.Contains(snapshot.StatusItems, s => s.Name == "Vector Store" && s.IsHealthy);
         }
         finally
         {
@@ -698,6 +774,8 @@ public sealed class InMemoryVectorStoreWithOneChunk : IVectorStore
 
     public int Count => _inner.Count;
     public IReadOnlyList<KnowledgeChunk> Chunks => _inner.Chunks;
+    public string StoreKind => _inner.StoreKind;
+    public string? PersistencePath => _inner.PersistencePath;
     public Task SaveAsync(string path, CancellationToken ct = default) => _inner.SaveAsync(path, ct);
     public Task LoadAsync(string path, CancellationToken ct = default) => _inner.LoadAsync(path, ct);
     public void Replace(IEnumerable<KnowledgeChunk> chunks) => _inner.Replace(chunks);

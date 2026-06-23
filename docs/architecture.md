@@ -34,7 +34,7 @@ flowchart LR
         T12[MakeQuizTool]
         LLM[OpenAiLlmClient]
         Emb[IEmbeddingClient\nLocalHash / Zhipu]
-        VS[InMemoryVectorStore]
+        VS[JsonPersistentVectorStore]
         Idx[KnowledgeIndexer]
         Importer[CourseMaterialImporter]
         TraceI[IAgentTracer]
@@ -152,10 +152,12 @@ sequenceDiagram
 LLM 看到这些定义后，会在 `tool_calls` 字段里告诉 Agent "调用 calculate({expression:'2+3'})"。
 Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=tool, tool_call_id=xxx` 灌回历史。
 
-### 3.4 RAG 为什么用内存向量库？
+### 3.4 RAG 为什么用 JSON 持久化向量库？
 
-* 课程演示规模 < 1000 个 chunk，余弦相似度 O(N·D) 完全够用，**零外部依赖**（不用 Docker / Qdrant）。
-* 索引序列化为 JSON 写盘，下次启动直接 `LoadIfExistsAsync` 复用。
+* 课程演示规模 < 1000 个 chunk，加载到内存后做余弦相似度 O(N·D) 检索完全够用，**零外部依赖**（不用 Docker / Qdrant）。
+* `JsonPersistentVectorStore` 把向量快照持久化到 `data/index.json`，下次启动直接 `LoadIfExistsAsync` 复用，不需要重新 embedding。
+* 新索引文件包含 `version`、`createdUtc`、`chunkCount`、`chunks`，同时兼容旧的数组格式索引文件。
+* `doctor` 会显示 `Vector Store = JsonPersistent`、已加载 chunk 数和持久化路径，便于现场验收。
 * 接口 `IVectorStore` 仍然抽象，未来切到 Qdrant 仅替换实现。
 
 ### 3.5 为什么支持本地 Embedding？

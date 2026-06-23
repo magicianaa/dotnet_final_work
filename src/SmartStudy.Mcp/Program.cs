@@ -34,7 +34,7 @@ builder.Services.AddSingleton<IEmbeddingClient>(sp =>
         ? sp.GetRequiredService<LocalHashEmbeddingClient>()
         : sp.GetRequiredService<ZhipuEmbeddingClient>();
 });
-builder.Services.AddSingleton<IVectorStore, InMemoryVectorStore>();
+builder.Services.AddSingleton<IVectorStore, JsonPersistentVectorStore>();
 builder.Services.AddSingleton<KnowledgeSearchService>();
 builder.Services.AddSingleton<CourseMaterialCatalog>();
 builder.Services.AddHostedService<RagIndexLoader>();

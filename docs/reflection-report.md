@@ -261,9 +261,9 @@ RAG 由三个部分组成：
 
 1. `KnowledgeIndexer`：读取 `knowledge/*.md`，按段落切成 chunk。
 2. `IEmbeddingClient`：生成向量，当前支持 `LocalHashEmbeddingClient` 和 `ZhipuEmbeddingClient`。
-3. `InMemoryVectorStore`：使用余弦相似度检索最相关片段，并把索引序列化为 `data/index.json`。
+3. `JsonPersistentVectorStore`：把向量快照持久化到 `data/index.json`，启动后重新加载，并在内存中用余弦相似度检索最相关片段。
 
-我选择内存向量库而不是 Qdrant、Milvus 等外部数据库，是因为课程演示数据量很小，内存检索足够，并且不需要 Docker 或额外服务，降低了现场演示失败概率。同时保留了 `IVectorStore` 接口，以后需要扩展时可以替换成真正的向量数据库。
+我选择 JSON 持久化向量库而不是 Qdrant、Milvus 等外部数据库，是因为课程演示数据量很小，内存检索足够，并且不需要 Docker 或额外服务，降低了现场演示失败概率。它不是一次性内存缓存：`SaveAsync` 会写入带版本、生成时间和 chunk 数量的快照文件，`LoadAsync` 会在程序重启后恢复索引，同时兼容旧的数组格式 `index.json`。项目仍保留 `IVectorStore` 接口，以后需要扩展时可以替换成 Qdrant、SQLite 向量扩展或 Azure AI Search。
 
 为了避免云端 embedding 余额、网络或限流影响演示，我又增加了本地 RAG 模式：把 `Agent:Embedding:Provider` 配置为 `local` 时，系统使用 `LocalHashEmbeddingClient`。它会把中文 bigram 和英文 token 哈希到固定维度向量，再进行 L2 归一化。这种方法不是神经网络语义 embedding，但对本课程资料这种小规模知识库可以稳定完成离线检索；如果追求更高语义质量，可以把 provider 切回 `zhipu`，或未来替换为 Ollama / ONNX 本地向量模型。
 
@@ -349,7 +349,7 @@ CLI 还增加了 `doctor` / `status` / `tools` 诊断命令。`SmartStudyDoctor`
 | CalculatorTool | 基本表达式和非法表达式 |
 | ConversationMemory | system prompt 唯一、滑动窗口 |
 | KnowledgeIndexer | 文本切片 |
-| InMemoryVectorStore | 余弦相似度排序 |
+| JsonPersistentVectorStore | 持久化快照保存、重启加载、旧索引兼容、余弦相似度排序 |
 | LocalHashEmbeddingClient | 本地向量维度、确定性、相关文本检索 |
 | OpenAiLlmClient 流式 tool call | 流式参数拼接不产生多余 `{}` |
 | ConsoleLineEditor | 左右箭头、Home/End、Backspace/Delete 与中文显示宽度 |
@@ -359,13 +359,13 @@ CLI 还增加了 `doctor` / `status` / `tools` 诊断命令。`SmartStudyDoctor`
 | KnowledgeMcpTools | 验证 MCP 可复用知识库检索和课程资料清单能力 |
 | LearningProfileTools | 学习画像持久化、画像工具输出、画像补参兜底、复习计划生成 |
 
-这些测试不依赖真实 LLM API，而是使用 `FakeLlmClient` 构造固定响应，因此可以稳定验证 Agent 主循环。当前测试结果为 36/36 通过。
+这些测试不依赖真实 LLM API，而是使用 `FakeLlmClient` 构造固定响应，因此可以稳定验证 Agent 主循环。当前测试结果为 43/43 通过。
 
 ## 13. 项目不足与改进方向
 
 当前项目已经满足课程要求，但仍有改进空间：
 
-1. RAG 只使用内存向量库，数据规模变大时可以替换为 Qdrant 或 SQLite 向量扩展。
+1. RAG 当前使用 JSON 持久化向量库，适合课程规模；数据规模变大时可以替换为 Qdrant、Azure AI Search 或 SQLite 向量扩展。
 2. 长期学习画像目前是结构化 JSON 文件，后续可以把用户长期偏好和学习薄弱点也向量化存储，实现跨主题的相似弱点检索。
 3. 当前是单 Agent 架构，后续可以扩展为 Planner Agent + Tutor Agent + Quiz Agent 的多 Agent 协作。
 4. 控制台 UI 适合答辩演示，但如果作为真实学习产品，可以增加 Web UI 和学习进度面板。
