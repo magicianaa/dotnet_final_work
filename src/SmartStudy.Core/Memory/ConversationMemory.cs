@@ -2,7 +2,7 @@ using SmartStudy.Core.Llm;
 
 namespace SmartStudy.Core.Memory;
 
-/// <summary>对话短期记忆。维护 system + 历史对话，支持滑动窗口防止上下文爆炸。</summary>
+/// <summary>Conversation short-term memory with a protocol-safe sliding window.</summary>
 public interface IConversationMemory
 {
     IReadOnlyList<ChatMessage> Messages { get; }
@@ -28,7 +28,6 @@ public sealed class ConversationMemory : IConversationMemory
 
     public void AddSystem(string content)
     {
-        // system 始终保留在最前，且只保留一条最新的
         _messages.RemoveAll(m => m.Role == ChatRoles.System);
         _messages.Insert(0, new ChatMessage { Role = ChatRoles.System, Content = content });
     }
@@ -60,14 +59,6 @@ public sealed class ConversationMemory : IConversationMemory
     private void Append(ChatMessage msg)
     {
         _messages.Add(msg);
-        // 滑动窗口：保留 system + 最后 N 条非 system
-        var nonSys = _messages.Count(m => m.Role != ChatRoles.System);
-        while (nonSys > _maxNonSystem)
-        {
-            var idx = _messages.FindIndex(m => m.Role != ChatRoles.System);
-            if (idx < 0) break;
-            _messages.RemoveAt(idx);
-            nonSys--;
-        }
+        ConversationHistory.TrimInPlace(_messages, _maxNonSystem, keepTrailingToolCall: true);
     }
 }

@@ -933,14 +933,7 @@ public sealed class ProjectConversationMemory : IConversationMemory
     private void Append(ChatMessage msg)
     {
         _messages.Add(msg);
-        var nonSys = _messages.Count(m => m.Role != ChatRoles.System);
-        while (nonSys > _maxNonSystem)
-        {
-            var idx = _messages.FindIndex(m => m.Role != ChatRoles.System);
-            if (idx < 0) break;
-            _messages.RemoveAt(idx);
-            nonSys--;
-        }
+        ConversationHistory.TrimInPlace(_messages, _maxNonSystem, keepTrailingToolCall: true);
         Save();
     }
 
@@ -965,6 +958,7 @@ public sealed class ProjectConversationMemory : IConversationMemory
             if (_messages.All(m => m.Role != ChatRoles.System))
                 _messages.Insert(0, new ChatMessage { Role = ChatRoles.System, Content = _options.Value.SystemPrompt });
 
+            ConversationHistory.TrimInPlace(_messages, _maxNonSystem);
             Save();
         }
     }

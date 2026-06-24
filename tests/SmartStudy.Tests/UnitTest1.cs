@@ -131,6 +131,55 @@ public class ReActAgentTests
         var r = await agent.RunAsync("never end");
         Assert.True(r.ReachedLimit);
     }
+
+    [Fact]
+    public async Task RequestHistory_DoesNotContainOrphanToolMessagesAfterSlidingWindow()
+    {
+        var llm = new FakeLlmClient(new[]
+        {
+            new ChatResponse
+            {
+                FinishReason = "tool_calls",
+                ToolCalls = new()
+                {
+                    new ToolCall { Id = "c1", Function = new ToolCallFunction { Name = "calculate", Arguments = "{\"expression\":\"1+1\"}" } }
+                }
+            },
+            new ChatResponse { Content = "2", FinishReason = "stop" },
+            new ChatResponse { Content = "ok", FinishReason = "stop" }
+        });
+        var registry = new ToolRegistry(new ITool[] { new CalculatorTool() });
+        var memory = new ConversationMemory(maxNonSystemMessages: 4);
+        var agent = new ReActAgent(llm, registry, memory, new NullTracer(), Opts(),
+            NullLogger<ReActAgent>.Instance);
+
+        await agent.RunAsync("1+1");
+        await agent.RunAsync("next");
+
+        Assert.Empty(FindOrphanToolMessages(llm.Requests.Last().Messages));
+    }
+
+    private static IEnumerable<ChatMessage> FindOrphanToolMessages(IReadOnlyList<ChatMessage> messages)
+    {
+        var pendingToolCallIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var message in messages)
+        {
+            if (message.Role == ChatRoles.Assistant && message.ToolCalls is { Count: > 0 })
+            {
+                pendingToolCallIds = message.ToolCalls.Select(c => c.Id).ToHashSet(StringComparer.Ordinal);
+                continue;
+            }
+
+            if (message.Role == ChatRoles.Tool)
+            {
+                if (string.IsNullOrWhiteSpace(message.ToolCallId) || !pendingToolCallIds.Remove(message.ToolCallId))
+                    yield return message;
+                continue;
+            }
+
+            pendingToolCallIds.Clear();
+        }
+    }
 }
 
 public class CalculatorToolTests
@@ -279,6 +328,28 @@ public class ConversationMemoryTests
         m.AddUser("1"); m.AddUser("2"); m.AddUser("3");
         Assert.Equal(3, m.Messages.Count); // system + 2
         Assert.Equal("2", m.Messages[1].Content);
+    }
+
+    [Fact]
+    public void SlidingWindowKeepsToolResultWithItsAssistantToolCall()
+    {
+        var m = new ConversationMemory(maxNonSystemMessages: 4);
+        m.AddSystem("S");
+        m.AddUser("first");
+        m.AddAssistant(new ChatMessage
+        {
+            Role = ChatRoles.Assistant,
+            ToolCalls = new()
+            {
+                new ToolCall { Id = "call-1", Function = new ToolCallFunction { Name = "calculate", Arguments = "{\"expression\":\"1+1\"}" } }
+            }
+        });
+        m.AddToolResult("call-1", "calculate", "1+1 = 2");
+        m.AddAssistant(new ChatMessage { Role = ChatRoles.Assistant, Content = "2" });
+        m.AddUser("next");
+
+        Assert.Contains(m.Messages, m => m.Role == ChatRoles.Assistant && m.ToolCalls?.Any(c => c.Id == "call-1") == true);
+        Assert.Contains(m.Messages, m => m.Role == ChatRoles.Tool && m.ToolCallId == "call-1");
     }
 }
 
@@ -1275,6 +1346,40 @@ public class LearningWorkspaceTests
             Assert.False(File.Exists(firstMemoryFile));
             Assert.Equal(second.Id, state.CurrentConversation.Id);
             Assert.DoesNotContain(state.Conversations, c => c.Id == first);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task ProjectConversationMemory_LoadsPersistedHistoryWithoutOrphanToolMessages()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-memory-repair-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            var options = WorkspaceOptions(root);
+            var projects = new LearningProjectService(options);
+            _ = await projects.GetStateAsync();
+            var memoryFile = projects.CurrentMemoryFile();
+            Directory.CreateDirectory(Path.GetDirectoryName(memoryFile)!);
+
+            var brokenHistory = new List<ChatMessage>
+            {
+                new() { Role = ChatRoles.System, Content = "S" },
+                new() { Role = ChatRoles.User, Content = "old question" },
+                new() { Role = ChatRoles.Tool, ToolCallId = "missing-assistant", Name = "calculate", Content = "1+1 = 2" },
+                new() { Role = ChatRoles.User, Content = "new question" }
+            };
+            await File.WriteAllTextAsync(memoryFile, JsonSerializer.Serialize(brokenHistory));
+
+            var memory = new ProjectConversationMemory(projects, options);
+
+            Assert.DoesNotContain(memory.Messages, m => m.Role == ChatRoles.Tool && m.ToolCallId == "missing-assistant");
+            Assert.Contains(memory.Messages, m => m.Content == "new question");
         }
         finally
         {
