@@ -40,6 +40,7 @@ public sealed class ReActAgent
     {
         _memory.AddUser(userInput);
         var toolDefs = _tools.ToOpenAiDefinitions();
+        var quizAnswerObservations = new List<string>();
 
         for (int step = 1; step <= _opts.MaxLoopSteps; step++)
         {
@@ -76,7 +77,7 @@ public sealed class ReActAgent
             // 1) 没有工具调用 → LLM 给出最终回答
             if (response.ToolCalls.Count == 0)
             {
-                var answer = response.Content ?? string.Empty;
+                var answer = QuizAnswerObservationSummary.GuardFinalAnswer(response.Content ?? string.Empty, quizAnswerObservations);
                 await _tracer.TrackAsync(new AgentEvent(step, AgentEventType.FinalAnswer, Content: answer), ct);
                 return new AgentResult(answer, step, false);
             }
@@ -114,6 +115,8 @@ public sealed class ReActAgent
                 }
 
                 _memory.AddToolResult(call.Id, call.Function.Name, observation);
+                if (string.Equals(call.Function.Name, "submit_quiz_answer", StringComparison.Ordinal))
+                    quizAnswerObservations.Add(observation);
                 await _tracer.TrackAsync(new AgentEvent(step, AgentEventType.Observation,
                     ToolName: call.Function.Name, ToolCallId: call.Id, Content: observation), ct);
             }
@@ -130,6 +133,7 @@ public sealed class ReActAgent
     {
         _memory.AddUser(userInput);
         var toolDefs = _tools.ToOpenAiDefinitions();
+        var quizAnswerObservations = new List<string>();
 
         for (int step = 1; step <= _opts.MaxLoopSteps; step++)
         {
@@ -166,7 +170,8 @@ public sealed class ReActAgent
 
             if (assistantMsg.ToolCalls is null || assistantMsg.ToolCalls.Count == 0)
             {
-                yield return new AgentEvent(step, AgentEventType.FinalAnswer, Content: assistantMsg.Content ?? "");
+                var finalAnswer = QuizAnswerObservationSummary.GuardFinalAnswer(assistantMsg.Content ?? "", quizAnswerObservations);
+                yield return new AgentEvent(step, AgentEventType.FinalAnswer, Content: finalAnswer);
                 yield break;
             }
 
@@ -194,6 +199,8 @@ public sealed class ReActAgent
                     }
                 }
                 _memory.AddToolResult(call.Id, call.Function.Name, observation);
+                if (string.Equals(call.Function.Name, "submit_quiz_answer", StringComparison.Ordinal))
+                    quizAnswerObservations.Add(observation);
                 yield return new AgentEvent(step, AgentEventType.Observation,
                     ToolName: call.Function.Name, ToolCallId: call.Id, Content: observation);
             }

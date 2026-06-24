@@ -10,6 +10,10 @@ public static class QuizAnswerParser
         @"(?:第\s*)?(?<number>\d+)\s*(?:题|問|问)?\s*(?:我)?\s*(?:选|选择|答案是|答案为|答|=|：|:)\s*(?<answer>[A-Za-z]|[\p{IsCJKUnifiedIdeographs}][\p{IsCJKUnifiedIdeographs}\w-]{0,30})",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly Regex ChineseQuestionRegex = new(
+        @"第\s*(?<number>[一二三四五六七八九十]+)\s*(?:题|問|问)\s*(?:我)?\s*(?:选|选择|答案是|答案为|答|=|：|:)?\s*(?<answer>[A-Za-z])",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex CompactQuestionRegex = new(
         @"第\s*(?<number>\d+)\s*(?:题|問|问)\s*(?<answer>[A-Za-z])",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -40,11 +44,11 @@ public static class QuizAnswerParser
         var topic = ReadTopic(normalized);
         var matches = new List<ParsedQuizAnswer>();
 
-        foreach (var regex in new[] { ExplicitQuestionRegex, CompactQuestionRegex, ListedAnswerRegex })
+        foreach (var regex in new[] { ExplicitQuestionRegex, ChineseQuestionRegex, CompactQuestionRegex, ListedAnswerRegex })
         {
             foreach (Match match in regex.Matches(normalized))
             {
-                if (!match.Success || !int.TryParse(match.Groups["number"].Value, out var number) || number <= 0)
+                if (!match.Success || !TryReadQuestionNumber(match.Groups["number"].Value, out var number) || number <= 0)
                     continue;
 
                 var answer = CleanAnswer(match.Groups["answer"].Value);
@@ -117,6 +121,28 @@ public static class QuizAnswerParser
 
     private static string CleanAnswer(string answer) =>
         answer.Trim().Trim('。', '.', ',', '，', ';', '；', ':', '：', '、', ' ', '\t').ToUpperInvariant();
+
+    private static bool TryReadQuestionNumber(string value, out int number)
+    {
+        if (int.TryParse(value, out number))
+            return true;
+
+        number = value.Trim() switch
+        {
+            "一" => 1,
+            "二" => 2,
+            "三" => 3,
+            "四" => 4,
+            "五" => 5,
+            "六" => 6,
+            "七" => 7,
+            "八" => 8,
+            "九" => 9,
+            "十" => 10,
+            _ => 0
+        };
+        return number > 0;
+    }
 
     private static bool IsNoise(string answer)
     {

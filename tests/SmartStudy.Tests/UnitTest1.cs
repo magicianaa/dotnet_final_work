@@ -159,6 +159,52 @@ public class ReActAgentTests
         Assert.Empty(FindOrphanToolMessages(llm.Requests.Last().Messages));
     }
 
+    [Fact]
+    public async Task QuizAnswerFinalAnswer_UsesToolObservationWhenLlmClaimsAllCorrect()
+    {
+        var llm = new FakeLlmClient(new[]
+        {
+            new ChatResponse
+            {
+                FinishReason = "tool_calls",
+                ToolCalls = new()
+                {
+                    new ToolCall
+                    {
+                        Id = "q1",
+                        Function = new ToolCallFunction
+                        {
+                            Name = "submit_quiz_answer",
+                            Arguments = """{"quizId":"latest","questionNumber":3,"answer":"C","topic":"Dependency Injection"}"""
+                        }
+                    }
+                }
+            },
+            new ChatResponse { Content = "你已经全部答对。", FinishReason = "stop" }
+        });
+        var registry = new ToolRegistry(new ITool[]
+        {
+            new StaticTool("submit_quiz_answer", """
+            练习 #e97720f5 第 3 题：答错
+            题目：以下哪个不是依赖注入的关键概念？
+            你的答案：C
+            标准答案：服务定位器模式（Service Locator Pattern）
+            解析：服务定位器模式不是依赖注入的关键概念。
+            已把 `.NET 框架依赖注入` 加入学习画像的薄弱知识点。
+            """)
+        });
+        var memory = new ConversationMemory();
+        var agent = new ReActAgent(llm, registry, memory, new NullTracer(), Opts(),
+            NullLogger<ReActAgent>.Instance);
+
+        var result = await agent.RunAsync("第3题选C");
+
+        Assert.Contains("答错 1 题", result.FinalAnswer);
+        Assert.Contains("第 3 题：答错", result.FinalAnswer);
+        Assert.Contains("标准答案：服务定位器模式", result.FinalAnswer);
+        Assert.DoesNotContain("全部答对", result.FinalAnswer);
+    }
+
     private static IEnumerable<ChatMessage> FindOrphanToolMessages(IReadOnlyList<ChatMessage> messages)
     {
         var pendingToolCallIds = new HashSet<string>(StringComparer.Ordinal);
@@ -180,6 +226,22 @@ public class ReActAgentTests
             pendingToolCallIds.Clear();
         }
     }
+}
+
+public sealed class StaticTool : ITool
+{
+    public StaticTool(string name, string response)
+    {
+        Name = name;
+        _response = response;
+    }
+
+    private readonly string _response;
+
+    public string Name { get; }
+    public string Description => "Test tool";
+    public JsonElement ParametersSchema { get; } = JsonDocument.Parse("""{"type":"object"}""").RootElement;
+    public Task<string> InvokeAsync(JsonElement args, CancellationToken ct = default) => Task.FromResult(_response);
 }
 
 public class CalculatorToolTests
@@ -329,6 +391,22 @@ public class QuizAnswerParserTests
                 Assert.Equal(2, second.QuestionNumber);
                 Assert.Equal("B", second.Answer);
             });
+    }
+
+    [Fact]
+    public void ParsesChineseOrdinalAnswerLines()
+    {
+        var ok = QuizAnswerParser.TryParse("""
+        第一题：B
+        第二题：C
+        第三题：C
+        第四题：A
+        第五题：B
+        """, out var answers);
+
+        Assert.True(ok);
+        Assert.Equal(new[] { 1, 2, 3, 4, 5 }, answers.Select(a => a.QuestionNumber));
+        Assert.Equal(new[] { "B", "C", "C", "A", "B" }, answers.Select(a => a.Answer));
     }
 
     [Fact]
