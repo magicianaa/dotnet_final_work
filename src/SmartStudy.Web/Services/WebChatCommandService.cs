@@ -6,6 +6,7 @@ using SmartStudy.Core.Configuration;
 using SmartStudy.Core.Memory;
 using SmartStudy.Core.Rag;
 using SmartStudy.Core.Tools;
+using SmartStudy.Core.Tools.Builtin;
 
 namespace SmartStudy.Web.Services;
 
@@ -40,10 +41,13 @@ public sealed class WebChatCommandService
 
     public async Task<WebChatCommandResult> TryExecuteAsync(string input, bool currentUseStreaming, CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(input) || !input.TrimStart().StartsWith(':'))
+        if (string.IsNullOrWhiteSpace(input))
             return WebChatCommandResult.NotHandled;
 
         input = input.Trim();
+        if (!input.StartsWith(':'))
+            return await TryRunDirectQuizAnswerAsync(input, ct);
+
         var space = input.IndexOf(' ');
         var command = (space < 0 ? input : input[..space]).ToLowerInvariant();
         var rest = space < 0 ? "" : input[(space + 1)..].Trim();
@@ -170,6 +174,15 @@ public sealed class WebChatCommandService
         }
     }
 
+    private async Task<WebChatCommandResult> TryRunDirectQuizAnswerAsync(string input, CancellationToken ct)
+    {
+        if (!QuizAnswerParser.TryParse(input, out var answers))
+            return WebChatCommandResult.NotHandled;
+
+        var result = await _services.GetRequiredService<QuizAnswerSubmissionService>().SubmitAsync(answers, ct);
+        return Handled(result, "已提交练习答案。", refreshDashboard: true);
+    }
+
     private async Task LoadIndexIfAvailableAsync(CancellationToken ct)
     {
         var indexer = _services.GetService<KnowledgeIndexer>();
@@ -218,7 +231,7 @@ public sealed class WebChatCommandService
         | `:progress` | 调用 `show_progress` |
         | `:history [limit]` | 调用 `review_history` |
         | `:quiz <material> \| <count>` | 调用 `make_quiz` |
-        | `:answer <quizId> \| <number> \| <answer> \| <topic>` | 调用 `submit_quiz_answer` |
+        | `:answer <quizId> \| <number> \| <answer> \| <topic>` | 调用 `submit_quiz_answer`；也可直接回复“第1题选A，第2题选B” |
         | `:mistake <question> \| <topic> \| <your> \| <correct> \| <explanation>` | 调用 `record_quiz_result` |
         | `:mistakes [topic]` | 调用 `show_mistakes` |
         | `:calc <expression>` | 调用 `calculate` |

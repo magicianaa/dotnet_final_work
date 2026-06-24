@@ -88,6 +88,9 @@ public sealed class MakeQuizTool : ITool
             ""
         };
 
+        lines.Insert(2, "也可以直接回复，例如：`第1题选A，第2题选B`。系统会自动提交并判分。");
+        lines.Insert(3, $"标准指令示例：`:answer {session.Id} | 1 | A | 主题`，或 `:answer latest | 1 | A | 主题`。");
+
         foreach (var question in session.Questions)
         {
             lines.Add($"{question.Number}. {question.Question}");

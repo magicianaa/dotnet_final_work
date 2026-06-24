@@ -53,6 +53,8 @@ public static class SmartStudyWebHostExtensions
         services.AddScoped<IQuizResultStore, ProjectQuizResultStore>();
         services.AddScoped<IQuizSessionStore, ProjectQuizSessionStore>();
         services.AddScoped<IConversationMemory, ProjectConversationMemory>();
+        services.AddScoped<SubmitQuizAnswerTool>();
+        services.AddScoped<QuizAnswerSubmissionService>();
 
         services.AddScoped<ITool, KnowledgeSearchTool>();
         services.AddScoped<ITool>(sp => new ReadCourseMaterialTool(
@@ -69,7 +71,7 @@ public static class SmartStudyWebHostExtensions
         services.AddScoped<ITool, ShowProgressTool>();
         services.AddScoped<ITool, ReviewHistoryTool>();
         services.AddScoped<ITool, RecordQuizResultTool>();
-        services.AddScoped<ITool, SubmitQuizAnswerTool>();
+        services.AddScoped<ITool>(sp => sp.GetRequiredService<SubmitQuizAnswerTool>());
         services.AddScoped<ITool, ShowMistakesTool>();
         services.AddScoped<ITool, CalculatorTool>();
         services.AddScoped<ITool, MakeQuizTool>();

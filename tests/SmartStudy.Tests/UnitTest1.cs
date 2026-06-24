@@ -236,6 +236,9 @@ public class MakeQuizToolTests
         {
             var result = await tool.InvokeAsync(args);
 
+            Assert.Contains(":answer", result);
+            Assert.Contains("latest", result);
+
             Assert.Contains("已生成练习", result);
             Assert.Contains("ReAct 的 Action 是什么？", result);
             Assert.Contains("B. 调用工具", result);
@@ -303,6 +306,35 @@ public class MakeQuizToolTests
         Assert.StartsWith("出题失败：LLM 未返回合法的练习题 JSON", result);
         Assert.Equal(2, llm.Requests.Count);
         if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+    }
+}
+
+public class QuizAnswerParserTests
+{
+    [Fact]
+    public void ParsesDirectMultiQuestionAnswers()
+    {
+        var ok = QuizAnswerParser.TryParse("第1题选A，第2题选B", out var answers);
+
+        Assert.True(ok);
+        Assert.Collection(answers,
+            first =>
+            {
+                Assert.Equal("latest", first.QuizId);
+                Assert.Equal(1, first.QuestionNumber);
+                Assert.Equal("A", first.Answer);
+            },
+            second =>
+            {
+                Assert.Equal(2, second.QuestionNumber);
+                Assert.Equal("B", second.Answer);
+            });
+    }
+
+    [Fact]
+    public void IgnoresQuizGenerationRequests()
+    {
+        Assert.False(QuizAnswerParser.TryParse("请基于 ReAct 出 3 道题", out _));
     }
 }
 
@@ -1206,6 +1238,50 @@ public class QuizResultToolTests
             Assert.Contains("标准答案：工具返回结果", result);
             Assert.Single(attempts);
             Assert.Contains("ReAct", profile.WeakTopics);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DirectQuizAnswerSubmissionRecordsMistake()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-direct-submit-quiz-test-" + Guid.NewGuid().ToString("N"));
+        var sessionPath = Path.Combine(root, "data", "quiz-sessions.json");
+        var quizPath = Path.Combine(root, "data", "quiz-results.json");
+        var profilePath = Path.Combine(root, "data", "learning-profile.json");
+
+        try
+        {
+            var sessions = new JsonQuizSessionStore(sessionPath);
+            await sessions.SaveAsync(new QuizSession
+            {
+                Questions = new()
+                {
+                    new QuizQuestion
+                    {
+                        Number = 1,
+                        Question = "ReAct 的 Observation 是什么？",
+                        Options = new() { "模型思考", "工具返回结果" },
+                        Answer = "B",
+                        Explanation = "Observation 是工具调用后的结果。"
+                    }
+                }
+            });
+            var quizStore = new JsonQuizResultStore(quizPath);
+            var profileStore = new JsonLearningProfileStore(profilePath);
+            var service = new QuizAnswerSubmissionService(new SubmitQuizAnswerTool(sessions, quizStore, profileStore));
+
+            Assert.True(QuizAnswerParser.TryParse("第1题选A，主题 ReAct", out var answers));
+            var result = await service.SubmitAsync(answers);
+            var attempts = await quizStore.ListAsync(mistakesOnly: true, topic: "ReAct");
+            var profile = await profileStore.GetAsync();
+
+            Assert.Contains("submit_quiz_answer", result);
+            Assert.Contains("ReAct", profile.WeakTopics);
+            Assert.Single(attempts);
         }
         finally
         {

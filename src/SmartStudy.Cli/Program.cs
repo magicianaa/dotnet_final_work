@@ -65,6 +65,8 @@ host.Services.AddSingleton<IStudyProgressStore, ProjectStudyProgressStore>();
 host.Services.AddSingleton<IQuizResultStore, ProjectQuizResultStore>();
 host.Services.AddSingleton<IQuizSessionStore, ProjectQuizSessionStore>();
 host.Services.AddSingleton<IConversationMemory, ProjectConversationMemory>();
+host.Services.AddSingleton<SubmitQuizAnswerTool>();
+host.Services.AddSingleton<QuizAnswerSubmissionService>();
 
 // Agent 工具
 host.Services.AddSingleton<ITool, KnowledgeSearchTool>();
@@ -82,7 +84,7 @@ host.Services.AddSingleton<ITool, MarkTaskDoneTool>();
 host.Services.AddSingleton<ITool, ShowProgressTool>();
 host.Services.AddSingleton<ITool, ReviewHistoryTool>();
 host.Services.AddSingleton<ITool, RecordQuizResultTool>();
-host.Services.AddSingleton<ITool, SubmitQuizAnswerTool>();
+host.Services.AddSingleton<ITool>(sp => sp.GetRequiredService<SubmitQuizAnswerTool>());
 host.Services.AddSingleton<ITool, ShowMistakesTool>();
 host.Services.AddSingleton<ITool, CalculatorTool>();
 host.Services.AddSingleton<ITool, MakeQuizTool>();
@@ -247,6 +249,11 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
         }
         if (await TryRunToolCommand(sp, input))
             continue;
+        if (await TryRunDirectQuizAnswer(sp, input))
+        {
+            await projects.TouchConversationAsync(input);
+            continue;
+        }
         if (input.StartsWith(":model ", StringComparison.OrdinalIgnoreCase))
         {
             var name = input[7..].Trim();
@@ -286,6 +293,22 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
             AnsiConsole.WriteException(ex, ExceptionFormats.ShortenEverything);
         }
     }
+}
+
+static async Task<bool> TryRunDirectQuizAnswer(IServiceProvider sp, string input)
+{
+    if (input.TrimStart().StartsWith(':'))
+        return false;
+
+    if (!QuizAnswerParser.TryParse(input, out var answers))
+        return false;
+
+    var result = await sp.GetRequiredService<QuizAnswerSubmissionService>().SubmitAsync(answers);
+    AnsiConsole.Write(new Panel(Markup.Escape(result))
+        .Header("submit_quiz_answer")
+        .RoundedBorder()
+        .BorderColor(Color.Blue));
+    return true;
 }
 
 static async Task RunDoctor(IServiceProvider sp)
@@ -496,6 +519,9 @@ static async Task RunOneShot(IServiceProvider sp, string input, bool useStreamin
     else
         AnsiConsole.MarkupLine("[yellow]提示：尚未构建知识库索引，knowledge_search 将不可用。[/]");
 
+    if (await TryRunDirectQuizAnswer(sp, input))
+        return;
+
     var agent = sp.GetRequiredService<ReActAgent>();
     if (useStreaming)
     {
@@ -572,7 +598,7 @@ static void PrintChatCommands()
     AddCommandRow(table, ":progress", "调用 show_progress");
     AddCommandRow(table, ":history [limit]", "调用 review_history");
     AddCommandRow(table, ":quiz <material> | <count>", "调用 make_quiz");
-    AddCommandRow(table, ":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer");
+    AddCommandRow(table, ":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer；也可直接回复“第1题选A，第2题选B”");
     AddCommandRow(table, ":mistake <question> | <topic> | <your> | <correct> | <explanation>", "调用 record_quiz_result");
     AddCommandRow(table, ":mistakes [topic]", "调用 show_mistakes");
     AddCommandRow(table, ":calc <expression>", "调用 calculate");
