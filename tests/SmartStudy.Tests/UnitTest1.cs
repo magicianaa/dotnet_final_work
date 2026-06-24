@@ -91,6 +91,31 @@ public class ReActAgentTests
     }
 
     [Fact]
+    public async Task CalculateToolCall_PreservesUserGrouping()
+    {
+        var llm = new FakeLlmClient(new[]
+        {
+            new ChatResponse
+            {
+                FinishReason = "tool_calls",
+                ToolCalls = new()
+                {
+                    new ToolCall { Id = "c1", Function = new ToolCallFunction { Name = "calculate", Arguments = "{\"expression\":\"45+15/6\"}" } }
+                }
+            },
+            new ChatResponse { Content = "10", FinishReason = "stop" }
+        });
+        var registry = new ToolRegistry(new ITool[] { new CalculatorTool() });
+        var memory = new ConversationMemory();
+        var agent = new ReActAgent(llm, registry, memory, new NullTracer(), Opts(),
+            NullLogger<ReActAgent>.Instance);
+
+        await agent.RunAsync("\u8bf7\u8ba1\u7b97\uff0845+15\uff09/6");
+
+        Assert.Contains(memory.Messages, m => m.Role == "tool" && m.Content!.Contains("(45+15)/6 = 10"));
+    }
+
+    [Fact]
     public async Task ReachesLimit_WhenLlmKeepsCallingTools()
     {
         var loop = new ChatResponse
@@ -267,6 +292,15 @@ public class KnowledgeIndexerTests
         Assert.True(chunks.Count >= 2);
         Assert.All(chunks, c => Assert.True(c.Length > 0));
     }
+
+    [Fact]
+    public void Chunk_HardSplitsSingleLongParagraph()
+    {
+        var chunks = KnowledgeIndexer.Chunk(new string('x', 1500), chunkSize: 600, overlap: 80).ToList();
+
+        Assert.True(chunks.Count > 1);
+        Assert.All(chunks, c => Assert.True(c.Length <= 600));
+    }
 }
 
 public class InMemoryVectorStoreTests
@@ -396,6 +430,75 @@ public class LocalHashEmbeddingClientTests
     }
 }
 
+public class ZhipuEmbeddingClientTests
+{
+    [Fact]
+    public async Task SendsConfiguredDimensions()
+    {
+        var handler = new RecordingHttpMessageHandler(new Func<HttpRequestMessage, HttpResponseMessage>[]
+        {
+            _ => EmbeddingResponse(0)
+        });
+        var client = CreateZhipuClient(handler);
+
+        await client.EmbedAsync("ReAct");
+
+        Assert.Contains("\"dimensions\":512", handler.RequestBodies.Single());
+    }
+
+    [Fact]
+    public async Task SplitsBatchWhenParameterErrorOccurs()
+    {
+        var handler = new RecordingHttpMessageHandler(new Func<HttpRequestMessage, HttpResponseMessage>[]
+        {
+            _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            {
+                Content = new StringContent("""{"error":{"code":"1210","message":"API 调用参数有误，请检查文档。"}}""", Encoding.UTF8, "application/json")
+            },
+            _ => EmbeddingResponse(0),
+            _ => EmbeddingResponse(0)
+        });
+        var client = CreateZhipuClient(handler);
+
+        var vectors = await client.EmbedBatchAsync(new[] { "first", "second" });
+
+        Assert.Equal(2, vectors.Count);
+        Assert.Equal(3, handler.RequestBodies.Count);
+        Assert.Contains("\"input\":[\"first\",\"second\"]", handler.RequestBodies[0]);
+        Assert.Contains("\"input\":[\"first\"]", handler.RequestBodies[1]);
+        Assert.Contains("\"input\":[\"second\"]", handler.RequestBodies[2]);
+    }
+
+    private static ZhipuEmbeddingClient CreateZhipuClient(HttpMessageHandler handler)
+    {
+        var options = Options.Create(new AgentOptions
+        {
+            Embedding = new EmbeddingOptions
+            {
+                Provider = "zhipu",
+                BaseUrl = "https://example.test/api/paas/v4",
+                ApiKey = "test-key",
+                Model = "embedding-3",
+                LocalDimensions = 512
+            }
+        });
+
+        return new ZhipuEmbeddingClient(
+            new HttpClient(handler),
+            options,
+            NullLogger<ZhipuEmbeddingClient>.Instance);
+    }
+
+    private static HttpResponseMessage EmbeddingResponse(int index) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                $$"""{"data":[{"index":{{index}},"embedding":[1.0,0.0]}]}""",
+                Encoding.UTF8,
+                "application/json")
+        };
+}
+
 public sealed class StubHttpMessageHandler : HttpMessageHandler
 {
     private readonly HttpResponseMessage _response;
@@ -403,6 +506,23 @@ public sealed class StubHttpMessageHandler : HttpMessageHandler
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
         Task.FromResult(_response);
+}
+
+public sealed class RecordingHttpMessageHandler : HttpMessageHandler
+{
+    private readonly Queue<Func<HttpRequestMessage, HttpResponseMessage>> _responses;
+    public List<string> RequestBodies { get; } = new();
+
+    public RecordingHttpMessageHandler(IEnumerable<Func<HttpRequestMessage, HttpResponseMessage>> responses)
+    {
+        _responses = new Queue<Func<HttpRequestMessage, HttpResponseMessage>>(responses);
+    }
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+    {
+        RequestBodies.Add(request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken));
+        return _responses.Dequeue()(request);
+    }
 }
 
 public class OpenAiLlmClientStreamTests
@@ -789,6 +909,46 @@ public sealed class InMemoryVectorStoreWithOneChunk : IVectorStore
 public class CourseMaterialImporterExtendedFormatTests
 {
     [Fact]
+    public async Task ImportsSingleMaterialFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-import-single-file-test-" + Guid.NewGuid().ToString("N"));
+        var knowledge = Path.Combine(root, "knowledge");
+        var data = Path.Combine(root, "data");
+        var sourceFile = Path.Combine(root, "single.md");
+        Directory.CreateDirectory(root);
+        await File.WriteAllTextAsync(sourceFile, "Single file ReAct material", Encoding.UTF8);
+
+        try
+        {
+            var options = Options.Create(new AgentOptions
+            {
+                Embedding = new EmbeddingOptions { Provider = "local", LocalDimensions = 128 },
+                Rag = new RagOptions
+                {
+                    KnowledgeDirectory = knowledge,
+                    IndexFile = Path.Combine(data, "index.json")
+                }
+            });
+            var embed = new LocalHashEmbeddingClient(options);
+            var store = new InMemoryVectorStore();
+            var indexer = new KnowledgeIndexer(embed, store, options, NullLogger<KnowledgeIndexer>.Instance);
+            var importer = new CourseMaterialImporter(indexer, options, NullLogger<CourseMaterialImporter>.Instance);
+
+            var result = await importer.ImportAsync(sourceFile);
+
+            Assert.Equal(1, result.FilesRead);
+            Assert.Equal(0, result.FilesSkipped);
+            Assert.Contains("single.md", result.ImportedSources);
+            Assert.Contains("Single file ReAct material", File.ReadAllText(Path.Combine(knowledge, "imported", "single.md")));
+            Assert.True(result.ChunksIndexed > 0);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task ImportsCsvHtmlAndXlsxMaterials()
     {
         var root = Path.Combine(Path.GetTempPath(), "smartstudy-import-formats-test-" + Guid.NewGuid().ToString("N"));
@@ -1049,6 +1209,119 @@ public class CourseMaterialCatalogTests
             if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
         }
     }
+}
+
+public class LearningWorkspaceTests
+{
+    [Fact]
+    public async Task ConversationMemoryPersistsAcrossConversationSwitches()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-workspace-memory-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            var options = WorkspaceOptions(root);
+            var projects = new LearningProjectService(options);
+            var memory = new ProjectConversationMemory(projects, options);
+
+            memory.AddUser("first conversation message");
+            var firstConversation = projects.CurrentConversation.Id;
+
+            var second = await projects.CreateConversationAsync("Second");
+            memory.Reload();
+            memory.AddUser("second conversation message");
+
+            await projects.SelectConversationAsync(firstConversation);
+            memory.Reload();
+            Assert.Contains(memory.Messages, m => m.Content == "first conversation message");
+            Assert.DoesNotContain(memory.Messages, m => m.Content == "second conversation message");
+
+            await projects.SelectConversationAsync(second.Id);
+            memory.Reload();
+            Assert.Contains(memory.Messages, m => m.Content == "second conversation message");
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DeleteConversationRemovesMemoryFileAndSelectsFallback()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-delete-conversation-test-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            var options = WorkspaceOptions(root);
+            var projects = new LearningProjectService(options);
+            var memory = new ProjectConversationMemory(projects, options);
+            var first = projects.CurrentConversation.Id;
+            memory.AddUser("persist me");
+            var firstMemoryFile = projects.CurrentMemoryFile();
+            Assert.True(File.Exists(firstMemoryFile));
+
+            var second = await projects.CreateConversationAsync("Second");
+            memory.Reload();
+            memory.AddUser("fallback");
+
+            var deleted = await projects.DeleteConversationAsync(first);
+            memory.Reload();
+            var state = await projects.GetStateAsync();
+
+            Assert.Equal(first, deleted.Id);
+            Assert.False(File.Exists(firstMemoryFile));
+            Assert.Equal(second.Id, state.CurrentConversation.Id);
+            Assert.DoesNotContain(state.Conversations, c => c.Id == first);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task DeleteProjectRemovesProjectDirectoryAndSelectsFallback()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "smartstudy-delete-project-test-" + Guid.NewGuid().ToString("N"));
+        var sourceA = Path.Combine(root, "source-a");
+        var sourceB = Path.Combine(root, "source-b");
+        Directory.CreateDirectory(sourceA);
+        Directory.CreateDirectory(sourceB);
+
+        try
+        {
+            var options = WorkspaceOptions(root);
+            var projects = new LearningProjectService(options);
+            var projectA = await projects.CreateProjectAsync(sourceA, "Project A");
+            var projectARoot = projects.GetCurrentProjectPaths().Root;
+            await projects.CreateProjectAsync(sourceB, "Project B");
+
+            var deleted = await projects.DeleteProjectAsync(projectA.Id);
+            var state = await projects.GetStateAsync();
+
+            Assert.Equal(projectA.Id, deleted.Id);
+            Assert.False(Directory.Exists(projectARoot));
+            Assert.DoesNotContain(state.Projects, p => p.Id == projectA.Id);
+            Assert.Equal("Project B", state.CurrentProject.Name);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, recursive: true);
+        }
+    }
+
+    private static IOptions<AgentOptions> WorkspaceOptions(string root) =>
+        Options.Create(new AgentOptions
+        {
+            Rag = new RagOptions
+            {
+                KnowledgeDirectory = Path.Combine(root, "knowledge"),
+                IndexFile = Path.Combine(root, "data", "index.json")
+            }
+        });
 }
 
 public class KnowledgeMcpToolsTests

@@ -35,22 +35,15 @@ public sealed class CourseMaterialImporter
     {
     }
 
-    public async Task<CourseImportResult> ImportAsync(string directory, string? glob = null, CancellationToken ct = default)
+    public async Task<CourseImportResult> ImportAsync(string path, string? glob = null, CancellationToken ct = default)
     {
-        var sourceDir = NormalizePath(directory);
-        if (!Directory.Exists(sourceDir))
-            throw new DirectoryNotFoundException($"目录不存在：{sourceDir}");
+        var sourcePath = NormalizePath(path);
+        var files = ResolveSourceFiles(sourcePath, glob);
 
         var opts = _rag.Current;
         Directory.CreateDirectory(opts.KnowledgeDirectory);
         var importedDir = Path.Combine(opts.KnowledgeDirectory, "imported");
         Directory.CreateDirectory(importedDir);
-
-        var files = Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories)
-            .Where(f => SupportedExtensions.Contains(Path.GetExtension(f)))
-            .Where(f => string.IsNullOrWhiteSpace(glob) || Path.GetFileName(f).Contains(glob, StringComparison.OrdinalIgnoreCase))
-            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-            .ToList();
 
         var imported = new List<string>();
         var skipped = 0;
@@ -97,6 +90,29 @@ public sealed class CourseMaterialImporter
     {
         var trimmed = path.Trim().Trim('"');
         return Path.GetFullPath(Environment.ExpandEnvironmentVariables(trimmed));
+    }
+
+    private static List<string> ResolveSourceFiles(string sourcePath, string? glob)
+    {
+        if (File.Exists(sourcePath))
+        {
+            if (!SupportedExtensions.Contains(Path.GetExtension(sourcePath)))
+                throw new InvalidOperationException($"不支持的资料文件类型：{Path.GetExtension(sourcePath)}");
+
+            return string.IsNullOrWhiteSpace(glob) ||
+                   Path.GetFileName(sourcePath).Contains(glob, StringComparison.OrdinalIgnoreCase)
+                ? new List<string> { sourcePath }
+                : new List<string>();
+        }
+
+        if (!Directory.Exists(sourcePath))
+            throw new FileNotFoundException($"路径不存在：{sourcePath}");
+
+        return Directory.EnumerateFiles(sourcePath, "*", SearchOption.AllDirectories)
+            .Where(f => SupportedExtensions.Contains(Path.GetExtension(f)))
+            .Where(f => string.IsNullOrWhiteSpace(glob) || Path.GetFileName(f).Contains(glob, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static async Task<string> ExtractTextAsync(string file, CancellationToken ct)

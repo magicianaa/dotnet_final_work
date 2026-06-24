@@ -213,6 +213,46 @@ public sealed class LearningProjectService : IRagRuntimeContext
         Changed?.Invoke();
     }
 
+    public async Task<LearningProject> DeleteProjectAsync(string projectId, CancellationToken ct = default)
+    {
+        LearningProject deleted;
+        string deletedRoot;
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            await EnsureLoadedCoreAsync(ct);
+            if (_catalog.Projects.Count <= 1)
+                throw new InvalidOperationException("至少需要保留一个学习项目。");
+
+            var project = FindProject(projectId)
+                ?? throw new InvalidOperationException($"未找到学习项目：{projectId}");
+
+            deleted = project;
+            deletedRoot = Path.Combine(_rootDirectory, deleted.Id);
+            var wasActive = string.Equals(_catalog.ActiveProjectId, deleted.Id, StringComparison.OrdinalIgnoreCase);
+            _catalog.Projects.Remove(project);
+
+            if (wasActive)
+            {
+                var fallback = _catalog.Projects.OrderByDescending(p => p.UpdatedAt).First();
+                _catalog.ActiveProjectId = fallback.Id;
+                var conversations = await ReadConversationCatalogAsync(fallback.Id, ct);
+                _activeConversationId = conversations.ActiveConversationId;
+            }
+
+            await WriteProjectCatalogAsync(ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        DeleteDirectoryIfExists(deletedRoot);
+        Changed?.Invoke();
+        return deleted;
+    }
+
     public async Task<LearningConversation> CreateConversationAsync(string? title = null, CancellationToken ct = default)
     {
         await _lock.WaitAsync(ct);
@@ -264,6 +304,51 @@ public sealed class LearningProjectService : IRagRuntimeContext
         }
 
         Changed?.Invoke();
+    }
+
+    public async Task<LearningConversation> DeleteConversationAsync(string conversationId, CancellationToken ct = default)
+    {
+        LearningConversation deleted;
+        string memoryFile;
+
+        await _lock.WaitAsync(ct);
+        try
+        {
+            await EnsureLoadedCoreAsync(ct);
+            var project = CurrentProject;
+            var conversations = await ReadConversationCatalogAsync(project.Id, ct);
+            var conversation = FindConversation(conversations, conversationId)
+                ?? throw new InvalidOperationException($"未找到学习对话：{conversationId}");
+
+            deleted = conversation;
+            memoryFile = GetProjectPaths(project.Id).MemoryFile(deleted.Id);
+            conversations.Conversations.Remove(conversation);
+
+            if (conversations.Conversations.Count == 0)
+            {
+                conversations = NewConversationCatalog(project.Id, "默认对话");
+            }
+            else if (string.Equals(conversations.ActiveConversationId, deleted.Id, StringComparison.OrdinalIgnoreCase))
+            {
+                conversations.ActiveConversationId = conversations.Conversations
+                    .OrderByDescending(c => c.UpdatedAt)
+                    .First()
+                    .Id;
+            }
+
+            _activeConversationId = conversations.ActiveConversationId;
+            project.UpdatedAt = DateTime.Now;
+            await WriteConversationCatalogAsync(project.Id, conversations, ct);
+            await WriteProjectCatalogAsync(ct);
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        DeleteFileIfExists(memoryFile);
+        Changed?.Invoke();
+        return deleted;
     }
 
     public async Task TouchConversationAsync(string? titleHint = null, CancellationToken ct = default)
@@ -623,6 +708,18 @@ public sealed class LearningProjectService : IRagRuntimeContext
         File.Move(sourcePath, targetPath, overwrite: true);
     }
 
+    private static void DeleteFileIfExists(string path)
+    {
+        if (File.Exists(path))
+            File.Delete(path);
+    }
+
+    private static void DeleteDirectoryIfExists(string path)
+    {
+        if (Directory.Exists(path))
+            Directory.Delete(path, recursive: true);
+    }
+
     private void SeedDefaultProjectIfEmpty(string projectId)
     {
         var paths = GetProjectPaths(projectId);
@@ -818,6 +915,12 @@ public sealed class ProjectConversationMemory : IConversationMemory
         });
     }
 
+    public void Reload()
+    {
+        ResetLoadedPath();
+        EnsureLoaded();
+    }
+
     public void Reset()
     {
         EnsureLoaded();
@@ -870,9 +973,27 @@ public sealed class ProjectConversationMemory : IConversationMemory
     {
         var path = _loadedPath;
         if (string.IsNullOrWhiteSpace(path)) return;
+        WriteMemoryFile(path, _messages);
+    }
+
+    private static void WriteMemoryFile(string path, List<ChatMessage> messages)
+    {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        using var fs = File.Create(path);
-        JsonSerializer.Serialize(fs, _messages, LearningProjectJson.Options);
+        var tempPath = $"{path}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
+        try
+        {
+            using (var fs = new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            {
+                JsonSerializer.Serialize(fs, messages, LearningProjectJson.Options);
+            }
+
+            File.Move(tempPath, path, overwrite: true);
+        }
+        finally
+        {
+            if (File.Exists(tempPath))
+                File.Delete(tempPath);
+        }
     }
 
     private void ResetLoadedPath()

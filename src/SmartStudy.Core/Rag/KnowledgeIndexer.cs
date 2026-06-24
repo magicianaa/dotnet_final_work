@@ -67,10 +67,27 @@ public sealed class KnowledgeIndexer
     public static IEnumerable<string> Chunk(string text, int chunkSize, int overlap)
     {
         text = text.Replace("\r\n", "\n");
+        chunkSize = Math.Max(128, chunkSize);
+        overlap = Math.Clamp(overlap, 0, Math.Max(0, chunkSize / 2));
+
         var paragraphs = text.Split("\n\n", StringSplitOptions.RemoveEmptyEntries);
         var buf = new System.Text.StringBuilder();
         foreach (var p in paragraphs)
         {
+            if (p.Length > chunkSize)
+            {
+                if (buf.Length > 0)
+                {
+                    yield return buf.ToString();
+                    buf.Clear();
+                }
+
+                foreach (var part in SplitLongText(p, chunkSize, overlap))
+                    yield return part;
+
+                continue;
+            }
+
             if (buf.Length + p.Length + 1 > chunkSize && buf.Length > 0)
             {
                 yield return buf.ToString();
@@ -81,5 +98,20 @@ public sealed class KnowledgeIndexer
             buf.Append(p).Append("\n\n");
         }
         if (buf.Length > 0) yield return buf.ToString();
+    }
+
+    private static IEnumerable<string> SplitLongText(string text, int chunkSize, int overlap)
+    {
+        var step = Math.Max(1, chunkSize - overlap);
+        for (var start = 0; start < text.Length; start += step)
+        {
+            var length = Math.Min(chunkSize, text.Length - start);
+            var chunk = text.Substring(start, length);
+            if (!string.IsNullOrWhiteSpace(chunk))
+                yield return chunk;
+
+            if (start + length >= text.Length)
+                yield break;
+        }
     }
 }

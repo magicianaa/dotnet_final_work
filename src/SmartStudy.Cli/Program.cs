@@ -367,8 +367,13 @@ static async Task RunProjectCommand(IServiceProvider sp, string[] args)
         case "use":
             await SwitchProjectFromArgs(sp, rest);
             break;
+        case "delete":
+        case "remove":
+        case "rm":
+            await DeleteProjectFromArgs(sp, rest);
+            break;
         default:
-            AnsiConsole.MarkupLine("[yellow]用法：project list | project current | project new <目录> [| 名称] | project switch <项目ID或名称>[/]");
+            AnsiConsole.MarkupLine("[yellow]用法：project list | project current | project new <目录> [| 名称] | project switch <项目ID或名称> | project delete <项目ID或名称>[/]");
             break;
     }
 }
@@ -398,8 +403,13 @@ static async Task RunConversationCommand(IServiceProvider sp, string[] args)
         case "use":
             await SwitchConversationFromArgs(sp, rest);
             break;
+        case "delete":
+        case "remove":
+        case "rm":
+            await DeleteConversationFromArgs(sp, rest);
+            break;
         default:
-            AnsiConsole.MarkupLine("[yellow]用法：conversation list | conversation current | conversation new [标题] | conversation switch <对话ID或标题>[/]");
+            AnsiConsole.MarkupLine("[yellow]用法：conversation list | conversation current | conversation new [标题] | conversation switch <对话ID或标题> | conversation delete <对话ID或标题>[/]");
             break;
     }
 }
@@ -544,9 +554,11 @@ static void PrintChatCommands()
     AddCommandRow(table, ":project current", "查看当前项目和对话");
     AddCommandRow(table, ":project new <目录> | <名称>", "新建学习项目并导入资料");
     AddCommandRow(table, ":project switch <项目ID或名称>", "切换学习项目");
+    AddCommandRow(table, ":project delete <项目ID或名称>", "删除学习项目及其资料/索引/记忆");
     AddCommandRow(table, ":conversations", "列出当前项目下的学习对话");
     AddCommandRow(table, ":conversation new <标题>", "新建学习对话");
     AddCommandRow(table, ":conversation switch <对话ID或标题>", "切换学习对话");
+    AddCommandRow(table, ":conversation delete <对话ID或标题>", "删除学习对话及其记忆");
     AddCommandRow(table, ":multi <goal>", "启动 Multi-Agent 协作");
     AddCommandRow(table, ":plan-execute <goal>", "启动 Plan-and-Execute 并做答案质量检查");
     AddCommandRow(table, ":search <query>", "调用 knowledge_search");
@@ -564,7 +576,7 @@ static void PrintChatCommands()
     AddCommandRow(table, ":mistake <question> | <topic> | <your> | <correct> | <explanation>", "调用 record_quiz_result");
     AddCommandRow(table, ":mistakes [topic]", "调用 show_mistakes");
     AddCommandRow(table, ":calc <expression>", "调用 calculate");
-    AddCommandRow(table, ":import <directory> | <glob>", "调用 import_course_materials");
+    AddCommandRow(table, ":import <path> | <glob>", "调用 import_course_materials");
     AnsiConsole.Write(table);
 }
 
@@ -684,6 +696,10 @@ static async Task<bool> TryRunWorkspaceCommand(IServiceProvider sp, string input
         case ":project-switch":
             await SwitchProjectFromText(sp, rest);
             return true;
+        case ":project-delete":
+        case ":project-remove":
+            await DeleteProjectFromText(sp, rest);
+            return true;
         case ":conversations":
         case ":convs":
             await PrintConversations(sp);
@@ -703,6 +719,12 @@ static async Task<bool> TryRunWorkspaceCommand(IServiceProvider sp, string input
         case ":conversation-switch":
         case ":conv-switch":
             await SwitchConversationFromText(sp, rest);
+            return true;
+        case ":conversation-delete":
+        case ":conversation-remove":
+        case ":conv-delete":
+        case ":conv-remove":
+            await DeleteConversationFromText(sp, rest);
             return true;
     }
 
@@ -804,6 +826,11 @@ static async Task SwitchProjectFromArgs(IServiceProvider sp, string[] args)
     await SwitchProjectFromText(sp, string.Join(' ', args));
 }
 
+static async Task DeleteProjectFromArgs(IServiceProvider sp, string[] args)
+{
+    await DeleteProjectFromText(sp, string.Join(' ', args));
+}
+
 static async Task SwitchProjectFromText(IServiceProvider sp, string text)
 {
     var project = text.Trim();
@@ -817,7 +844,7 @@ static async Task SwitchProjectFromText(IServiceProvider sp, string text)
     {
         var projects = sp.GetRequiredService<LearningProjectService>();
         await projects.SelectProjectAsync(project);
-        sp.GetRequiredService<IConversationMemory>().Reset();
+        sp.GetRequiredService<IConversationMemory>().Reload();
         var indexer = sp.GetRequiredService<KnowledgeIndexer>();
         var loaded = await indexer.LoadIfExistsAsync();
         var state = await projects.GetStateAsync();
@@ -832,6 +859,30 @@ static async Task SwitchProjectFromText(IServiceProvider sp, string text)
     }
 }
 
+static async Task DeleteProjectFromText(IServiceProvider sp, string text)
+{
+    var project = text.Trim();
+    if (string.IsNullOrWhiteSpace(project))
+    {
+        AnsiConsole.MarkupLine("[yellow]用法：project delete <项目ID或名称>[/]");
+        return;
+    }
+
+    try
+    {
+        var projects = sp.GetRequiredService<LearningProjectService>();
+        var deleted = await projects.DeleteProjectAsync(project);
+        sp.GetRequiredService<IConversationMemory>().Reload();
+        var state = await projects.GetStateAsync();
+        AnsiConsole.MarkupLine($"[green]已删除项目：{Markup.Escape(deleted.Name)} ({Markup.Escape(deleted.Id)})[/]");
+        AnsiConsole.MarkupLine($"[dim]当前项目：{Markup.Escape(state.CurrentProject.Name)}；当前对话：{Markup.Escape(state.CurrentConversation.Title)}[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]删除项目失败：{Markup.Escape(ex.Message)}[/]");
+    }
+}
+
 static async Task CreateConversationFromArgs(IServiceProvider sp, string[] args)
 {
     await CreateConversationFromText(sp, string.Join(' ', args));
@@ -842,13 +893,18 @@ static async Task CreateConversationFromText(IServiceProvider sp, string text)
     var title = text.Trim();
     var projects = sp.GetRequiredService<LearningProjectService>();
     var conversation = await projects.CreateConversationAsync(string.IsNullOrWhiteSpace(title) ? null : title);
-    sp.GetRequiredService<IConversationMemory>().Reset();
+    sp.GetRequiredService<IConversationMemory>().Reload();
     AnsiConsole.MarkupLine($"[green]已新建并切换到对话：{Markup.Escape(conversation.Title)} ({Markup.Escape(conversation.Id)})[/]");
 }
 
 static async Task SwitchConversationFromArgs(IServiceProvider sp, string[] args)
 {
     await SwitchConversationFromText(sp, string.Join(' ', args));
+}
+
+static async Task DeleteConversationFromArgs(IServiceProvider sp, string[] args)
+{
+    await DeleteConversationFromText(sp, string.Join(' ', args));
 }
 
 static async Task SwitchConversationFromText(IServiceProvider sp, string text)
@@ -864,13 +920,37 @@ static async Task SwitchConversationFromText(IServiceProvider sp, string text)
     {
         var projects = sp.GetRequiredService<LearningProjectService>();
         await projects.SelectConversationAsync(conversation);
-        sp.GetRequiredService<IConversationMemory>().Reset();
+        sp.GetRequiredService<IConversationMemory>().Reload();
         var state = await projects.GetStateAsync();
         AnsiConsole.MarkupLine($"[green]已切换到对话：{Markup.Escape(state.CurrentConversation.Title)}[/]");
     }
     catch (Exception ex)
     {
         AnsiConsole.MarkupLine($"[red]切换对话失败：{Markup.Escape(ex.Message)}[/]");
+    }
+}
+
+static async Task DeleteConversationFromText(IServiceProvider sp, string text)
+{
+    var conversation = text.Trim();
+    if (string.IsNullOrWhiteSpace(conversation))
+    {
+        AnsiConsole.MarkupLine("[yellow]用法：conversation delete <对话ID或标题>[/]");
+        return;
+    }
+
+    try
+    {
+        var projects = sp.GetRequiredService<LearningProjectService>();
+        var deleted = await projects.DeleteConversationAsync(conversation);
+        sp.GetRequiredService<IConversationMemory>().Reload();
+        var state = await projects.GetStateAsync();
+        AnsiConsole.MarkupLine($"[green]已删除对话：{Markup.Escape(deleted.Title)} ({Markup.Escape(deleted.Id)})[/]");
+        AnsiConsole.MarkupLine($"[dim]当前对话：{Markup.Escape(state.CurrentConversation.Title)}[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]删除对话失败：{Markup.Escape(ex.Message)}[/]");
     }
 }
 
@@ -1003,9 +1083,9 @@ static string BuildMistakesArgs(string rest)
 static string BuildImportArgs(string rest)
 {
     var parts = rest.Split('|', StringSplitOptions.TrimEntries);
-    var directory = parts.Length > 0 ? parts[0] : "";
+    var path = parts.Length > 0 ? parts[0] : "";
     var glob = parts.Length > 1 ? parts[1] : null;
-    return JsonSerializer.Serialize(new { directory, glob });
+    return JsonSerializer.Serialize(new { path, glob });
 }
 
 static bool TryReadMultiAgentCommand(string input, out string goal)

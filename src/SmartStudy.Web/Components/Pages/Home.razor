@@ -40,8 +40,10 @@
                         IsBusy="isBusy"
                         OnCreateProject="CreateProjectAsync"
                         OnSelectProject="SelectProjectAsync"
+                        OnDeleteProject="DeleteProjectAsync"
                         OnCreateConversation="CreateConversationAsync"
                         OnSelectConversation="SelectConversationAsync"
+                        OnDeleteConversation="DeleteConversationAsync"
                         OnRefresh="LoadWorkspaceAsync" />
 
         <div class="conversation-panel">
@@ -119,7 +121,7 @@
         new(":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer", ":answer latest | 1 | A | Agent Loop"),
         new(":mistakes [topic]", "调用 show_mistakes", ":mistakes"),
         new(":calc <expression>", "调用 calculate", ":calc (45+15)/6"),
-        new(":import <directory> | <glob>", "调用 import_course_materials", ":import C:\\Users\\21125\\Desktop\\SEM & SEP\\ppts")
+        new(":import <path> | <glob>", "调用 import_course_materials", ":import C:\\Users\\21125\\Desktop\\SEM & SEP\\ppts")
     ];
 
     protected override async Task OnInitializedAsync()
@@ -348,6 +350,7 @@
     {
         if (isBusy) return;
         await Projects.SelectProjectAsync(projectId);
+        Memory.Reload();
         ResetConversationUi();
         RestoreMessagesFromMemory();
         await LoadWorkspaceAsync();
@@ -359,6 +362,7 @@
     {
         if (isBusy) return;
         await Projects.CreateConversationAsync();
+        Memory.Reload();
         ResetConversationUi();
         RestoreMessagesFromMemory();
         await LoadWorkspaceAsync();
@@ -370,11 +374,62 @@
     {
         if (isBusy) return;
         await Projects.SelectConversationAsync(conversationId);
+        Memory.Reload();
         ResetConversationUi();
         RestoreMessagesFromMemory();
         await LoadWorkspaceAsync();
         await LoadDashboardAsync();
         projectMessage = $"已切换到对话：{Projects.CurrentConversation.Title}";
+    }
+
+    private async Task DeleteProjectAsync(string projectId)
+    {
+        if (isBusy) return;
+
+        isBusy = true;
+        try
+        {
+            var deleted = await Projects.DeleteProjectAsync(projectId);
+            Memory.Reload();
+            ResetConversationUi();
+            RestoreMessagesFromMemory();
+            await LoadWorkspaceAsync();
+            await LoadDashboardAsync();
+            projectMessage = $"已删除项目：{deleted.Name}";
+        }
+        catch (Exception ex)
+        {
+            projectMessage = $"删除项目失败：{ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task DeleteConversationAsync(string conversationId)
+    {
+        if (isBusy) return;
+
+        isBusy = true;
+        try
+        {
+            var deleted = await Projects.DeleteConversationAsync(conversationId);
+            Memory.Reload();
+            ResetConversationUi();
+            RestoreMessagesFromMemory();
+            await LoadWorkspaceAsync();
+            await LoadDashboardAsync();
+            projectMessage = $"已删除对话：{deleted.Title}";
+        }
+        catch (Exception ex)
+        {
+            projectMessage = $"删除对话失败：{ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
     }
 
     private void HandleTraceChanged()

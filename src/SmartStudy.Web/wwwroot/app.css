@@ -358,6 +358,13 @@ input:focus, textarea:focus {
     gap: 8px;
 }
 
+.project-item-row, .conversation-item-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px;
+    gap: 8px;
+    align-items: stretch;
+}
+
 .project-item, .conversation-item {
     width: 100%;
     min-height: 58px;
@@ -374,9 +381,20 @@ input:focus, textarea:focus {
     box-shadow: var(--shadow-sm);
 }
 
-.project-item.active, .conversation-item.active {
+.project-item-row.active .project-item, .conversation-item-row.active .conversation-item {
     border-color: var(--accent);
     background: var(--accent-light);
+}
+
+.icon-button.danger {
+    color: #9f1239;
+    border-color: #fecdd3;
+    background: #fff1f2;
+    box-shadow: var(--shadow-sm);
+}
+
+.icon-button.danger:hover:not(:disabled) {
+    background: #ffe4e6;
 }
 
 .project-item strong, .conversation-item strong {

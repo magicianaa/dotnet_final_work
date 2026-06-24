@@ -84,6 +84,9 @@ public sealed class ReActAgent
             // 2) 有工具调用 → 顺序执行每个 tool call 并把结果回灌
             foreach (var call in response.ToolCalls)
             {
+                call.Function.Arguments = ToolCallArgumentRepair.Repair(
+                    call.Function.Name, call.Function.Arguments, userInput);
+
                 await _tracer.TrackAsync(new AgentEvent(step, AgentEventType.Action,
                     ToolName: call.Function.Name, ToolCallId: call.Id, Content: call.Function.Arguments), ct);
 
@@ -169,6 +172,9 @@ public sealed class ReActAgent
 
             foreach (var call in assistantMsg.ToolCalls)
             {
+                call.Function.Arguments = ToolCallArgumentRepair.Repair(
+                    call.Function.Name, call.Function.Arguments, userInput);
+
                 yield return new AgentEvent(step, AgentEventType.Action,
                     ToolName: call.Function.Name, ToolCallId: call.Id, Content: call.Function.Arguments);
 

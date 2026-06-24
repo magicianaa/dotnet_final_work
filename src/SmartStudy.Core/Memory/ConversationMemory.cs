@@ -10,6 +10,7 @@ public interface IConversationMemory
     void AddUser(string content);
     void AddAssistant(ChatMessage message);
     void AddToolResult(string toolCallId, string toolName, string content);
+    void Reload();
     void Reset();
 }
 
@@ -44,6 +45,10 @@ public sealed class ConversationMemory : IConversationMemory
             Name = toolName,
             Content = content
         });
+
+    public void Reload()
+    {
+    }
 
     public void Reset()
     {

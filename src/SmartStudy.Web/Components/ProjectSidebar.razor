@@ -29,12 +29,20 @@
     <div class="sidebar-section project-list">
         @foreach (var project in Workspace?.Projects ?? Array.Empty<LearningProject>())
         {
-            <button class="project-item @(project.Id == Workspace?.CurrentProject.Id ? "active" : "")"
-                    disabled="@IsBusy"
-                    @onclick="() => OnSelectProject.InvokeAsync(project.Id)">
-                <strong>@project.Name</strong>
-                <span>@ShortPath(project.SourceDirectory)</span>
-            </button>
+            <div class="project-item-row @(project.Id == Workspace?.CurrentProject.Id ? "active" : "")">
+                <button class="project-item"
+                        disabled="@IsBusy"
+                        @onclick="() => OnSelectProject.InvokeAsync(project.Id)">
+                    <strong>@project.Name</strong>
+                    <span>@ShortPath(project.SourceDirectory)</span>
+                </button>
+                <button class="icon-button compact danger"
+                        title="删除项目"
+                        disabled="@(IsBusy || (Workspace?.Projects.Count ?? 0) <= 1)"
+                        @onclick="() => OnDeleteProject.InvokeAsync(project.Id)">
+                    ×
+                </button>
+            </div>
         }
     </div>
 
@@ -50,12 +58,20 @@
         <div class="conversation-list">
             @foreach (var conversation in Workspace?.Conversations ?? Array.Empty<LearningConversation>())
             {
-                <button class="conversation-item @(conversation.Id == Workspace?.CurrentConversation.Id ? "active" : "")"
-                        disabled="@IsBusy"
-                        @onclick="() => OnSelectConversation.InvokeAsync(conversation.Id)">
-                    <strong>@conversation.Title</strong>
-                    <span>@conversation.UpdatedAt.ToString("MM-dd HH:mm")</span>
-                </button>
+                <div class="conversation-item-row @(conversation.Id == Workspace?.CurrentConversation.Id ? "active" : "")">
+                    <button class="conversation-item"
+                            disabled="@IsBusy"
+                            @onclick="() => OnSelectConversation.InvokeAsync(conversation.Id)">
+                        <strong>@conversation.Title</strong>
+                        <span>@conversation.UpdatedAt.ToString("MM-dd HH:mm")</span>
+                    </button>
+                    <button class="icon-button compact danger"
+                            title="删除对话"
+                            disabled="@IsBusy"
+                            @onclick="() => OnDeleteConversation.InvokeAsync(conversation.Id)">
+                        ×
+                    </button>
+                </div>
             }
         </div>
     </div>
@@ -71,8 +87,10 @@
     [Parameter] public bool IsBusy { get; set; }
     [Parameter] public EventCallback OnCreateProject { get; set; }
     [Parameter] public EventCallback<string> OnSelectProject { get; set; }
+    [Parameter] public EventCallback<string> OnDeleteProject { get; set; }
     [Parameter] public EventCallback OnCreateConversation { get; set; }
     [Parameter] public EventCallback<string> OnSelectConversation { get; set; }
+    [Parameter] public EventCallback<string> OnDeleteConversation { get; set; }
     [Parameter] public EventCallback OnRefresh { get; set; }
 
     private static string ShortPath(string path)

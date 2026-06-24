@@ -112,12 +112,14 @@ public sealed class ZhipuEmbeddingClient : IEmbeddingClient
     private readonly HttpClient _http;
     private readonly EmbeddingOptions _opts;
     private readonly ILogger<ZhipuEmbeddingClient> _logger;
+    private readonly int _dimensions;
 
     public ZhipuEmbeddingClient(HttpClient http, IOptions<AgentOptions> opts, ILogger<ZhipuEmbeddingClient> logger)
     {
         _http = http;
         _opts = opts.Value.Embedding;
         _logger = logger;
+        _dimensions = NormalizeDimensions(_opts.LocalDimensions);
         if (_http.BaseAddress is null) _http.BaseAddress = new Uri(_opts.BaseUrl.TrimEnd('/') + "/");
         _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _opts.ApiKey);
         _http.Timeout = TimeSpan.FromSeconds(60);
@@ -131,25 +133,82 @@ public sealed class ZhipuEmbeddingClient : IEmbeddingClient
 
     public async Task<IReadOnlyList<float[]>> EmbedBatchAsync(IEnumerable<string> texts, CancellationToken ct = default)
     {
-        var input = texts.ToList();
+        var input = texts.Select(SanitizeInput).ToList();
         var results = new List<float[]>(input.Count);
         // 智谱 embedding-3 单次最大 64 条
         const int batch = 32;
         for (int i = 0; i < input.Count; i += batch)
         {
             var slice = input.Skip(i).Take(batch).ToList();
-            var body = new { model = _opts.Model, input = slice };
-            using var resp = await _http.PostAsJsonAsync("embeddings", body, ct);
-            var raw = await resp.Content.ReadAsStringAsync(ct);
-            if (!resp.IsSuccessStatusCode)
-                throw new HttpRequestException($"Embedding 错误 {(int)resp.StatusCode}: {raw}");
-            using var doc = JsonDocument.Parse(raw);
-            foreach (var d in doc.RootElement.GetProperty("data").EnumerateArray())
-            {
-                var arr = d.GetProperty("embedding").EnumerateArray().Select(x => (float)x.GetDouble()).ToArray();
-                results.Add(arr);
-            }
+            results.AddRange(await EmbedSliceWithRetryAsync(slice, ct));
         }
         return results;
     }
+
+    private async Task<IReadOnlyList<float[]>> EmbedSliceWithRetryAsync(IReadOnlyList<string> input, CancellationToken ct)
+    {
+        try
+        {
+            return await EmbedSliceAsync(input, ct);
+        }
+        catch (HttpRequestException ex) when (input.Count > 1 && IsRetryableParameterError(ex))
+        {
+            var mid = input.Count / 2;
+            _logger.LogWarning(ex, "智谱 embedding 批量请求失败，拆分为 {Left}+{Right} 条后重试", mid, input.Count - mid);
+            var left = await EmbedSliceWithRetryAsync(input.Take(mid).ToList(), ct);
+            var right = await EmbedSliceWithRetryAsync(input.Skip(mid).ToList(), ct);
+            return left.Concat(right).ToList();
+        }
+    }
+
+    private async Task<IReadOnlyList<float[]>> EmbedSliceAsync(IReadOnlyList<string> input, CancellationToken ct)
+    {
+        if (input.Count == 0)
+            return Array.Empty<float[]>();
+
+        var body = new
+        {
+            model = _opts.Model,
+            input = input,
+            dimensions = _dimensions
+        };
+        using var resp = await _http.PostAsJsonAsync("embeddings", body, ct);
+        var raw = await resp.Content.ReadAsStringAsync(ct);
+        if (!resp.IsSuccessStatusCode)
+        {
+            var maxChars = input.Max(t => t.Length);
+            throw new HttpRequestException(
+                $"Embedding 错误 {(int)resp.StatusCode}: {raw}。本批 {input.Count} 条，最长 {maxChars} 字符；请检查文本是否过长或模型参数是否支持。");
+        }
+
+        using var doc = JsonDocument.Parse(raw);
+        return doc.RootElement.GetProperty("data")
+            .EnumerateArray()
+            .OrderBy(d => d.TryGetProperty("index", out var index) ? index.GetInt32() : 0)
+            .Select(d => d.GetProperty("embedding").EnumerateArray().Select(x => (float)x.GetDouble()).ToArray())
+            .ToList();
+    }
+
+    private static string SanitizeInput(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return ".";
+
+        return text.Replace('\0', ' ').Trim();
+    }
+
+    private static bool IsRetryableParameterError(HttpRequestException ex) =>
+        ex.Message.Contains("400", StringComparison.Ordinal) ||
+        ex.Message.Contains("\"1210\"", StringComparison.Ordinal) ||
+        ex.Message.Contains("参数", StringComparison.Ordinal);
+
+    private static int NormalizeDimensions(int dimensions) =>
+        dimensions switch
+        {
+            256 or 512 or 1024 or 2048 => dimensions,
+            <= 256 => 256,
+            <= 512 => 512,
+            <= 1024 => 1024,
+            _ => 2048
+        };
 }

@@ -51,10 +51,10 @@ flowchart LR
         LocalEmb[(本地 Hash Embedding)]
         KB[(knowledge/*.md)]
         Imported[(knowledge/imported/*.md)]
-        Notes[(data/notes.json)]
-        Profile[(data/learning-profile.json)]
-        Progress[(data/study-progress.json)]
-        QuizResults[(data/quiz-results.json)]
+        Notes[(project data/notes.json)]
+        Profile[(project data/learning-profile.json)]
+        Progress[(project data/study-progress.json)]
+        QuizResults[(project data/quiz-results.json)]
         TraceFile[(data/trace-*.jsonl)]
     end
 
@@ -132,10 +132,13 @@ sequenceDiagram
 * **避免框架黑盒**：SK 的 `AgentChat`、`FunctionCallingStepwisePlanner` 隐藏了 tool-loop 细节，
   不利于本课程要求的"理解 Agent 内部工作原理"。
 
-### 3.2 为什么记忆做成接口 + 单文件实现？
+### 3.2 为什么记忆做成接口 + 项目级文件实现？
 
-* 满足 SOLID 中 DSP 与 OCP：未来若要换 SQLite / 向量检索做长期记忆，只需新增实现。
-* 单元测试可直接构造 `ConversationMemory` 替代真实存储。
+* `IConversationMemory` 让 `ReActAgent` 不依赖具体存储；单元测试可直接构造内存版 `ConversationMemory`。
+* CLI 和 Web 默认使用 `ProjectConversationMemory`，按 `data/web-projects/<project-id>/data/memory/<conversation-id>.json` 保存短期对话记录。
+* 切换项目或对话时只重新加载对应记忆，不会清空历史；只有显式 `:reset`、Web 清空聊天或模型切换才重置当前对话上下文。
+* 删除对话会删除对应 memory 文件；删除项目会删除整个项目目录，包括资料、索引、笔记、画像、进度、错题、对话和记忆。
+* 满足 SOLID 中 DIP 与 OCP：未来若要换 SQLite / 向量检索做长期记忆，只需新增实现。
 
 ### 3.3 工具如何被 LLM "看见"？
 
@@ -184,7 +187,7 @@ Agent 用 `ToolRegistry.TryGet` 找到对应的 C# 工具，把结果以 `role=t
 | ------------------ | ----------------------------- | ------------------- | -------------------------- |
 | `knowledge_search` | RAG 检索课程资料                    | 回答事实性问题之前           | `KnowledgeSearchTool.cs`   |
 | `read_course_material` | 读取已导入课件的连续页面或整份内容       | 用户点名某个 PDF/PPT/课件并要求讲解 | `ReadCourseMaterialTool.cs` |
-| `import_course_materials` | 导入本地 PDF/PPTX/DOCX/XLSX/CSV/TSV/HTML/TXT/MD 资料并重建索引 | 用户提供本地资料目录 | `ImportCourseMaterialsTool.cs` |
+| `import_course_materials` | 导入本地 PDF/PPTX/DOCX/XLSX/CSV/TSV/HTML/TXT/MD 单文件或目录并重建索引 | 用户提供本地资料文件或目录 | `ImportCourseMaterialsTool.cs` |
 | `add_note`         | 把要点持久化为 JSON 笔记               | 用户说"记一下""保存"        | `NoteTools.cs`             |
 | `list_notes`       | 按标签 / 关键字查询笔记                 | 用户问"我之前记了什么"        | `NoteTools.cs`             |
 | `update_learning_profile` | 更新长期学习画像中的薄弱项、优势项、目标和偏好 | 用户表达不会什么、想准备什么、偏好怎么学 | `LearningProfileTools.cs` |

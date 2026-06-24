@@ -222,7 +222,7 @@ public sealed class WebChatCommandService
         | `:mistake <question> \| <topic> \| <your> \| <correct> \| <explanation>` | 调用 `record_quiz_result` |
         | `:mistakes [topic]` | 调用 `show_mistakes` |
         | `:calc <expression>` | 调用 `calculate` |
-        | `:import <directory> \| <glob>` | 调用 `import_course_materials` |
+        | `:import <path> \| <glob>` | 调用 `import_course_materials` |
         """;
 
     private static (string ToolName, string ArgumentsJson)? ParseToolCommand(string command, string rest) =>
@@ -364,9 +364,9 @@ public sealed class WebChatCommandService
     private static string BuildImportArgs(string rest)
     {
         var parts = rest.Split('|', StringSplitOptions.TrimEntries);
-        var directory = parts.Length > 0 ? parts[0] : "";
+        var path = parts.Length > 0 ? parts[0] : "";
         var glob = parts.Length > 1 ? parts[1] : null;
-        return JsonSerializer.Serialize(new { directory, glob });
+        return JsonSerializer.Serialize(new { path, glob });
     }
 
     private static bool TryReadMultiAgentCommand(string input, out string goal)

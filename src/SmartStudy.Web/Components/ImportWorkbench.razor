@@ -13,7 +13,7 @@
         }
     </div>
     <div class="import-form">
-        <input value="@ImportDirectory" @oninput="e => OnDirectoryChanged(e.Value?.ToString() ?? string.Empty)" placeholder="本机资料目录，例如 C:\Course\materials" />
+        <input value="@ImportDirectory" @oninput="e => OnDirectoryChanged(e.Value?.ToString() ?? string.Empty)" placeholder="本机资料文件或目录，例如 C:\Course\Chp6TestTool.pdf" />
         <input value="@ImportGlob" @oninput="e => OnGlobChanged(e.Value?.ToString() ?? string.Empty)" placeholder="可选：文件名过滤，例如 Lesson01" />
         <button class="primary-button" @onclick="OnImport" disabled="@(IsBusy || string.IsNullOrWhiteSpace(ImportDirectory))">导入并重建索引</button>
     </div>
