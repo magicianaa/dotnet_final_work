@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Text;
 using System.Xml.Linq;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using SmartStudy.Core.Configuration;
@@ -18,14 +19,20 @@ public sealed class CourseMaterialImporter
     };
 
     private readonly KnowledgeIndexer _indexer;
-    private readonly RagOptions _opts;
+    private readonly IRagRuntimeContext _rag;
     private readonly ILogger<CourseMaterialImporter> _logger;
 
-    public CourseMaterialImporter(KnowledgeIndexer indexer, IOptions<AgentOptions> options, ILogger<CourseMaterialImporter> logger)
+    [ActivatorUtilitiesConstructor]
+    public CourseMaterialImporter(KnowledgeIndexer indexer, IRagRuntimeContext rag, ILogger<CourseMaterialImporter> logger)
     {
         _indexer = indexer;
-        _opts = options.Value.Rag;
+        _rag = rag;
         _logger = logger;
+    }
+
+    public CourseMaterialImporter(KnowledgeIndexer indexer, IOptions<AgentOptions> options, ILogger<CourseMaterialImporter> logger)
+        : this(indexer, new DefaultRagRuntimeContext(options), logger)
+    {
     }
 
     public async Task<CourseImportResult> ImportAsync(string directory, string? glob = null, CancellationToken ct = default)
@@ -34,8 +41,9 @@ public sealed class CourseMaterialImporter
         if (!Directory.Exists(sourceDir))
             throw new DirectoryNotFoundException($"目录不存在：{sourceDir}");
 
-        Directory.CreateDirectory(_opts.KnowledgeDirectory);
-        var importedDir = Path.Combine(_opts.KnowledgeDirectory, "imported");
+        var opts = _rag.Current;
+        Directory.CreateDirectory(opts.KnowledgeDirectory);
+        var importedDir = Path.Combine(opts.KnowledgeDirectory, "imported");
         Directory.CreateDirectory(importedDir);
 
         var files = Directory.EnumerateFiles(sourceDir, "*", SearchOption.AllDirectories)

@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using SmartStudy.Core.Configuration;
 using SmartStudy.Core.Rag;
@@ -15,12 +16,18 @@ public sealed class ReadCourseMaterialTool : ITool
     private static readonly Regex PageHeading = new(@"^## Page\s+(\d+)\s*$", RegexOptions.Compiled | RegexOptions.Multiline);
 
     private readonly IVectorStore _store;
-    private readonly RagOptions _opts;
+    private readonly IRagRuntimeContext _rag;
 
-    public ReadCourseMaterialTool(IVectorStore store, IOptions<AgentOptions> opts)
+    [ActivatorUtilitiesConstructor]
+    public ReadCourseMaterialTool(IVectorStore store, IRagRuntimeContext rag)
     {
         _store = store;
-        _opts = opts.Value.Rag;
+        _rag = rag;
+    }
+
+    public ReadCourseMaterialTool(IVectorStore store, IOptions<AgentOptions> opts)
+        : this(store, new DefaultRagRuntimeContext(opts))
+    {
     }
 
     public string Name => "read_course_material";
@@ -98,9 +105,10 @@ public sealed class ReadCourseMaterialTool : ITool
 
     private string? ResolveMaterialPath(string fileName)
     {
+        var opts = _rag.Current;
         var normalized = NormalizeName(fileName);
-        var files = Directory.Exists(_opts.KnowledgeDirectory)
-            ? Directory.EnumerateFiles(_opts.KnowledgeDirectory, "*.md", SearchOption.AllDirectories).ToList()
+        var files = Directory.Exists(opts.KnowledgeDirectory)
+            ? Directory.EnumerateFiles(opts.KnowledgeDirectory, "*.md", SearchOption.AllDirectories).ToList()
             : new List<string>();
 
         var exact = files.FirstOrDefault(f => SourceNames(f).Any(n => NormalizeName(n).Equals(normalized, StringComparison.OrdinalIgnoreCase)));

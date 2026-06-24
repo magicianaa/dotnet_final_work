@@ -1,4 +1,5 @@
 using System.Text;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using SmartStudy.Core.Configuration;
 
@@ -8,13 +9,19 @@ public sealed class KnowledgeSearchService
 {
     private readonly IEmbeddingClient _embed;
     private readonly IVectorStore _store;
-    private readonly RagOptions _opts;
+    private readonly IRagRuntimeContext _rag;
 
-    public KnowledgeSearchService(IEmbeddingClient embed, IVectorStore store, IOptions<AgentOptions> opts)
+    [ActivatorUtilitiesConstructor]
+    public KnowledgeSearchService(IEmbeddingClient embed, IVectorStore store, IRagRuntimeContext rag)
     {
         _embed = embed;
         _store = store;
-        _opts = opts.Value.Rag;
+        _rag = rag;
+    }
+
+    public KnowledgeSearchService(IEmbeddingClient embed, IVectorStore store, IOptions<AgentOptions> opts)
+        : this(embed, store, new DefaultRagRuntimeContext(opts))
+    {
     }
 
     public async Task<string> SearchAsync(string query, int? topK = null, CancellationToken ct = default)
@@ -22,7 +29,7 @@ public sealed class KnowledgeSearchService
         if (_store.Count == 0)
             return "知识库尚未建立索引。请先执行 `index` 命令。";
 
-        var effectiveTopK = Math.Clamp(topK ?? _opts.TopK, 1, 8);
+        var effectiveTopK = Math.Clamp(topK ?? _rag.Current.TopK, 1, 8);
         var qv = await _embed.EmbedAsync(query, ct);
         var hits = _store.Search(qv, effectiveTopK);
         if (hits.Count == 0) return "未检索到相关内容。";
@@ -49,15 +56,22 @@ public sealed record CourseMaterialSummary(string FileName, string RelativePath,
 
 public sealed class CourseMaterialCatalog
 {
-    private readonly RagOptions _opts;
+    private readonly IRagRuntimeContext _rag;
+
+    [ActivatorUtilitiesConstructor]
+    public CourseMaterialCatalog(IRagRuntimeContext rag)
+    {
+        _rag = rag;
+    }
 
     public CourseMaterialCatalog(IOptions<AgentOptions> opts)
+        : this(new DefaultRagRuntimeContext(opts))
     {
-        _opts = opts.Value.Rag;
     }
 
     public IReadOnlyList<CourseMaterialSummary> ListImportedMaterials(int limit = 50)
     {
+        var opts = _rag.Current;
         var effectiveLimit = Math.Clamp(limit, 1, 200);
         var dirs = CandidateImportedDirectories()
             .Where(Directory.Exists)
@@ -72,7 +86,7 @@ public sealed class CourseMaterialCatalog
             .Select(f =>
             {
                 var info = new FileInfo(f);
-                var knowledgeDir = Directory.GetParent(info.DirectoryName ?? "")?.FullName ?? _opts.KnowledgeDirectory;
+                var knowledgeDir = Directory.GetParent(info.DirectoryName ?? "")?.FullName ?? opts.KnowledgeDirectory;
                 return new CourseMaterialSummary(
                     info.Name,
                     Path.GetRelativePath(knowledgeDir, info.FullName),
@@ -84,7 +98,8 @@ public sealed class CourseMaterialCatalog
 
     private IEnumerable<string> CandidateImportedDirectories()
     {
-        yield return Path.Combine(Path.GetFullPath(_opts.KnowledgeDirectory), "imported");
+        var opts = _rag.Current;
+        yield return Path.Combine(Path.GetFullPath(opts.KnowledgeDirectory), "imported");
 
         // When SmartStudy.Mcp is launched from its own output directory, imported course
         // materials usually live in the CLI output directory created during prior imports.
@@ -92,7 +107,7 @@ public sealed class CourseMaterialCatalog
             AppContext.BaseDirectory,
             "..", "..", "..", "..",
             "SmartStudy.Cli", "bin", "Debug", "net8.0",
-            _opts.KnowledgeDirectory,
+            opts.KnowledgeDirectory,
             "imported"));
     }
 }

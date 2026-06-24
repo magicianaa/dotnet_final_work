@@ -11,6 +11,7 @@ using SmartStudy.Core.Rag;
 using SmartStudy.Core.Tools;
 using SmartStudy.Core.Tools.Builtin;
 using SmartStudy.Core.Tracing;
+using SmartStudy.Core.Workspace;
 using SmartStudy.Cli;
 using System.IO.Compression;
 using System.Text;
@@ -597,7 +598,9 @@ public class SmartStudyDoctorTests
             });
             var search = new KnowledgeSearchService(new LocalHashEmbeddingClient(options), store, options);
             var tools = new ToolRegistry(new ITool[] { new CalculatorTool(), new KnowledgeSearchTool(search), new ListNotesTool(new JsonNoteStore(Path.Combine(data, "notes.json"))) });
-            var doctor = new SmartStudyDoctor(options, new LlmProfileManager(options), store, tools);
+            var projects = new LearningProjectService(options);
+            var projectPaths = projects.GetCurrentProjectPaths();
+            var doctor = new SmartStudyDoctor(options, new LlmProfileManager(options), store, tools, projects, projects);
 
             var snapshot = await doctor.InspectAsync();
 
@@ -608,6 +611,7 @@ public class SmartStudyDoctorTests
             Assert.Equal(1, snapshot.ImportedMaterialCount);
             Assert.Equal(1, snapshot.LoadedChunkCount);
             Assert.Equal("JsonPersistent", snapshot.VectorStoreKind);
+            Assert.Equal(Path.GetFullPath(projectPaths.IndexFile), snapshot.IndexFile);
             Assert.Equal(Path.GetFullPath(Path.Combine(data, "index.json")), snapshot.VectorStorePersistencePath);
             Assert.Equal(3, snapshot.Tools.Count);
             Assert.Contains(snapshot.StatusItems, s => s.Name == "Vector Store" && s.IsHealthy);

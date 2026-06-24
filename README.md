@@ -157,7 +157,7 @@ $env:DEEPSEEK_API_KEY = "<your-deepseek-key>"
 $env:SMARTSTUDY_Agent__Embedding__ApiKey = "<your-zhipu-key>"
 ```
 
-如果希望强制使用本地 RAG，不调用云端 embedding：
+如果希望强制使用本地 RAG，不调用云端 embedding，可临时设置：
 
 ```powershell
 $env:SMARTSTUDY_Agent__Embedding__Provider = "local"
@@ -180,7 +180,7 @@ $env:SMARTSTUDY_Agent__Embedding__Provider = "local"
       }
     },
     "Embedding": {
-      "Provider": "local",
+      "Provider": "zhipu",
       "ApiKey": "<your-zhipu-key>",
       "LocalDimensions": 512
     }
@@ -188,8 +188,8 @@ $env:SMARTSTUDY_Agent__Embedding__Provider = "local"
 }
 ```
 
-> 说明：`Embedding.Provider = "local"` 时不会调用云端 embedding，`ApiKey` 可留空。  
-> 如果切换为 `zhipu`，请配置 `Agent:Embedding:ApiKey`。
+> 说明：当前默认推荐 `Embedding.Provider = "zhipu"`，使用智谱 / GLM 的 `embedding-3`。
+> 如果切换为 `local`，则不会调用云端 embedding，`ApiKey` 可留空，适合无网或省额度演示。
 
 ## 构建与测试
 
@@ -210,6 +210,53 @@ Tests: 43/43 passed
 
 ## 运行 CLI
 
+## 一次性启动整个项目
+
+如果希望一次性启动可演示的完整项目，可以使用启动脚本。默认会：
+
+1. 设置 `SMARTSTUDY_Agent__Embedding__Provider=zhipu`
+2. 构建解决方案
+3. 重建 / 刷新知识库索引
+4. 启动 Blazor Web 前端
+5. 打开一个流式 CLI 交互窗口
+
+```powershell
+.\scripts\start-all.ps1
+```
+
+启动后打开：
+
+```text
+http://localhost:5178
+```
+
+常用参数：
+
+```powershell
+# 换 Web 端口
+.\scripts\start-all.ps1 -WebPort 5188
+
+# 已构建过时跳过 build
+.\scripts\start-all.ps1 -NoBuild
+
+# 不重建索引
+.\scripts\start-all.ps1 -SkipIndex
+
+# 只启动 Web，不打开 CLI 窗口
+.\scripts\start-all.ps1 -NoCli
+
+# 同时尝试启动 MCP stdio 服务
+.\scripts\start-all.ps1 -WithMcp
+```
+
+停止由脚本启动的进程：
+
+```powershell
+.\scripts\stop-all.ps1
+```
+
+说明：MCP 是 stdio 服务，通常由 MCP Host 拉起；如果没有 Host 输入，单独启动后退出是正常现象。
+
 ### 诊断项目状态
 
 答辩或录屏前建议先运行：
@@ -228,9 +275,9 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- tools
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- index
 ```
 
-索引会写入运行目录下的 `data/index.json`。当前默认向量库是 `JsonPersistentVectorStore`：重建索引时写入磁盘快照，后续 `doctor`、`ask`、`chat`、`multi`、`plan-execute` 和 MCP Server 启动时会加载这个快照，不需要每次重新 embedding。`doctor` 中应看到 `Vector Store = JsonPersistent`，并显示已加载 chunk 数。
+索引会写入当前学习项目的 `data/index.json`。项目数据默认位于仓库根目录的 `data/web-projects/<project-id>/`，其中包含该项目自己的 `knowledge/`、向量索引、笔记、学习画像、学习进度、错题记录和按对话拆分的短期记忆。CLI 与 Web 共用这套项目目录。当前默认向量库是 `JsonPersistentVectorStore`：重建索引时写入磁盘快照，后续 `doctor`、`ask`、`chat`、`multi`、`plan-execute` 和 MCP Server 启动时会加载这个快照，不需要每次重新 embedding。`doctor` 中应看到 `Vector Store = ProjectJsonPersistent` 或持久化向量库状态，并显示已加载 chunk 数。
 
-如果使用本地 RAG，可以先设置：
+如果需要改用本地 RAG，可以先设置：
 
 ```powershell
 $env:SMARTSTUDY_Agent__Embedding__Provider = "local"
@@ -246,7 +293,7 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- chat --stream
 
 交互模式支持以下指令：
 
-启动时只展示常用指令：`:q`、`:stream`、`:multi <目标>`、`:help`。输入 `:help` 或 `:commands` 可查看完整冒号指令表。
+启动时只展示常用指令：`:q`、`:stream`、`:project new <目录> | <名称>`、`:conversation new <标题>`、`:help`。输入 `:help` 或 `:commands` 可查看完整冒号指令表。
 
 | 输入 | 行为 |
 | --- | --- |
@@ -256,8 +303,28 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- chat --stream
 | `:stream` | 切换流式输出 |
 | `:models` | 查看所有 LLM profiles |
 | `:model <name>` | 切换当前模型，例如 `:model deepseek-chat` |
+| `:projects` | 列出学习项目 |
+| `:project current` | 查看当前项目和当前对话 |
+| `:project new <目录> \| <名称>` | 新建学习项目，导入资料并构建项目索引 |
+| `:project switch <项目ID或名称>` | 切换学习项目，并切换到该项目的对话、向量索引和记忆 |
+| `:conversations` | 列出当前项目下的学习对话 |
+| `:conversation new <标题>` | 在当前项目中新建学习对话 |
+| `:conversation switch <对话ID或标题>` | 切换当前项目下的学习对话 |
 | `:multi <goal>` | 在聊天模式中启动 Multi-Agent 协作，例如 `:multi 解释 ReAct Agent 并准备答辩` |
 | `:plan-execute <goal>` | 在聊天模式中启动 Plan-and-Execute，并在最终输出前做质量检查 |
+
+也可以直接在命令行使用项目 / 对话管理命令：
+
+```powershell
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- project list
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- project current
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- project new "C:\Users\21125\Desktop\SEM & SEP\ppts | SEM课程"
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- project switch 4f9e71ef4b
+
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- conversation list
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- conversation new "期末复习"
+dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- conversation switch "期末复习"
+```
 
 聊天模式还支持一组工具快捷指令。这些指令和自然语言触发的 Tool Calling 共用同一套 `ITool` 实现，只是把工具调用显式交给用户控制，适合演示和验收。
 
@@ -343,7 +410,6 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- chat --stream
 `plan-execute` / `plan-and-execute` 命令用于展示“先规划、再执行、最后审查”的 Agent 架构模式。它不会直接把问题丢给模型，而是把任务拆成 Plan、Execute: RAG 检索、Execute: 生成答复、Review: 答案质量检查四步。
 
 ```powershell
-$env:SMARTSTUDY_Agent__Embedding__Provider = "local"
 dotnet run --no-build --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- plan-execute "解释 ReAct Agent"
 ```
 
@@ -551,7 +617,6 @@ dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "我对 ReA
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "请基于我的学习画像制定一个 3 天复习计划"
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- ask "请按页详细讲讲 2026_Slides Lesson00_Introduction to SEME.pdf 的具体内容"
 dotnet run --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- multi "解释 ReAct Agent 并准备答辩"
-$env:SMARTSTUDY_Agent__Embedding__Provider = "local"
 dotnet run --no-build --project src\SmartStudy.Cli\SmartStudy.Cli.csproj -- plan-execute "解释 ReAct Agent"
 ```
 

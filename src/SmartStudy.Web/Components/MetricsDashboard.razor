@@ -7,6 +7,11 @@
         <small>@(State?.LlmProfile ?? "-") · @(State?.LlmApiKeyConfigured == true ? "key ready" : "missing key")</small>
     </div>
     <div class="metric">
+        <span>Project</span>
+        <strong>@(State?.ProjectName ?? "loading")</strong>
+        <small>@(State?.ConversationTitle ?? "-")</small>
+    </div>
+    <div class="metric">
         <span>Embedding</span>
         <strong>@(State?.EmbeddingProvider ?? "loading")</strong>
         <small>@(State?.EmbeddingModel ?? "-")</small>
@@ -15,11 +20,6 @@
         <span>Knowledge</span>
         <strong>@(State?.LoadedChunkCount.ToString() ?? "0") chunks</strong>
         <small>@(State?.KnowledgeFileCount.ToString() ?? "0") markdown · @(State?.ImportedMaterialCount.ToString() ?? "0") imported</small>
-    </div>
-    <div class="metric">
-        <span>Tools</span>
-        <strong>@(State?.Tools.Count.ToString() ?? "0") registered</strong>
-        <small>@(State?.IndexFileExists == true ? $"{State.IndexFileBytes / 1024} KB index" : "index missing")</small>
     </div>
 </section>
 

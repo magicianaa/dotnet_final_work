@@ -1,8 +1,8 @@
 bin/
 obj/
 data/
+.run/
 appsettings.Local.json
 *.user
 *.suo
 *.nupkg
-

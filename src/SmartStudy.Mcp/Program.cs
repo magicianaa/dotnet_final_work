@@ -20,6 +20,7 @@ builder.Configuration
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
 builder.Services.Configure<AgentOptions>(builder.Configuration.GetSection("Agent"));
+builder.Services.AddSingleton<IRagRuntimeContext, DefaultRagRuntimeContext>();
 
 // 与 CLI 共用持久化文件
 var noteFile = Environment.GetEnvironmentVariable("SMARTSTUDY_NOTES")
@@ -35,8 +36,12 @@ builder.Services.AddSingleton<IEmbeddingClient>(sp =>
         : sp.GetRequiredService<ZhipuEmbeddingClient>();
 });
 builder.Services.AddSingleton<IVectorStore, JsonPersistentVectorStore>();
-builder.Services.AddSingleton<KnowledgeSearchService>();
-builder.Services.AddSingleton<CourseMaterialCatalog>();
+builder.Services.AddSingleton(sp => new KnowledgeSearchService(
+    sp.GetRequiredService<IEmbeddingClient>(),
+    sp.GetRequiredService<IVectorStore>(),
+    sp.GetRequiredService<IRagRuntimeContext>()));
+builder.Services.AddSingleton(sp => new CourseMaterialCatalog(
+    sp.GetRequiredService<IRagRuntimeContext>()));
 builder.Services.AddHostedService<RagIndexLoader>();
 
 builder.Services

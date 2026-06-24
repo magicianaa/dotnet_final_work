@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using SmartStudy.Core.Configuration;
 
@@ -9,31 +10,39 @@ public sealed class KnowledgeIndexer
 {
     private readonly IEmbeddingClient _embed;
     private readonly IVectorStore _store;
-    private readonly RagOptions _opts;
+    private readonly IRagRuntimeContext _rag;
     private readonly ILogger<KnowledgeIndexer> _logger;
+
+    [ActivatorUtilitiesConstructor]
+    public KnowledgeIndexer(IEmbeddingClient embed, IVectorStore store,
+        IRagRuntimeContext rag, ILogger<KnowledgeIndexer> logger)
+    {
+        _embed = embed; _store = store; _rag = rag; _logger = logger;
+    }
 
     public KnowledgeIndexer(IEmbeddingClient embed, IVectorStore store,
         IOptions<AgentOptions> opts, ILogger<KnowledgeIndexer> logger)
+        : this(embed, store, new DefaultRagRuntimeContext(opts), logger)
     {
-        _embed = embed; _store = store; _opts = opts.Value.Rag; _logger = logger;
     }
 
     public int Count => _store.Count;
 
     public async Task BuildAsync(CancellationToken ct = default)
     {
-        if (!Directory.Exists(_opts.KnowledgeDirectory))
+        var opts = _rag.Current;
+        if (!Directory.Exists(opts.KnowledgeDirectory))
         {
-            _logger.LogWarning("知识目录不存在：{Dir}", _opts.KnowledgeDirectory);
+            _logger.LogWarning("知识目录不存在：{Dir}", opts.KnowledgeDirectory);
             return;
         }
-        var files = Directory.GetFiles(_opts.KnowledgeDirectory, "*.md", SearchOption.AllDirectories);
+        var files = Directory.GetFiles(opts.KnowledgeDirectory, "*.md", SearchOption.AllDirectories);
         var chunks = new List<KnowledgeChunk>();
         foreach (var f in files)
         {
             var text = await File.ReadAllTextAsync(f, ct);
             var name = Path.GetFileName(f);
-            foreach (var (chunkText, idx) in Chunk(text, _opts.ChunkSize, _opts.ChunkOverlap).Select((c, i) => (c, i)))
+            foreach (var (chunkText, idx) in Chunk(text, opts.ChunkSize, opts.ChunkOverlap).Select((c, i) => (c, i)))
             {
                 chunks.Add(new KnowledgeChunk { Id = $"{name}#{idx}", Source = name, Text = chunkText });
             }
@@ -42,14 +51,15 @@ public sealed class KnowledgeIndexer
         var vectors = await _embed.EmbedBatchAsync(chunks.Select(c => c.Text), ct);
         for (int i = 0; i < chunks.Count; i++) chunks[i].Vector = vectors[i];
         _store.Replace(chunks);
-        await _store.SaveAsync(_opts.IndexFile, ct);
-        _logger.LogInformation("索引已写入 {Path}", _opts.IndexFile);
+        await _store.SaveAsync(opts.IndexFile, ct);
+        _logger.LogInformation("索引已写入 {Path}", opts.IndexFile);
     }
 
     public async Task<bool> LoadIfExistsAsync(CancellationToken ct = default)
     {
-        if (!File.Exists(_opts.IndexFile)) return false;
-        await _store.LoadAsync(_opts.IndexFile, ct);
+        var opts = _rag.Current;
+        if (!File.Exists(opts.IndexFile)) return false;
+        await _store.LoadAsync(opts.IndexFile, ct);
         return _store.Count > 0;
     }
 

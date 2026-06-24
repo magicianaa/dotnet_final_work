@@ -7,6 +7,7 @@ using SmartStudy.Core.Rag;
 using SmartStudy.Core.Tools;
 using SmartStudy.Core.Tools.Builtin;
 using SmartStudy.Core.Tracing;
+using SmartStudy.Core.Workspace;
 
 namespace SmartStudy.Web.Services;
 
@@ -16,6 +17,8 @@ public static class SmartStudyWebHostExtensions
     {
         services.Configure<AgentOptions>(configuration.GetSection("Agent"));
         services.AddSingleton<LlmProfileManager>();
+        services.AddScoped<LearningProjectService>();
+        services.AddScoped<IRagRuntimeContext>(sp => sp.GetRequiredService<LearningProjectService>());
 
         services.AddHttpClient<ILlmClient, OpenAiLlmClient>();
         services.AddHttpClient<ZhipuEmbeddingClient>();
@@ -28,45 +31,33 @@ public static class SmartStudyWebHostExtensions
                 : sp.GetRequiredService<ZhipuEmbeddingClient>();
         });
 
-        services.AddSingleton<IVectorStore, InMemoryVectorStore>();
-        services.AddSingleton<KnowledgeIndexer>();
-        services.AddSingleton<KnowledgeSearchService>();
-        services.AddSingleton<CourseMaterialCatalog>();
-        services.AddSingleton<CourseMaterialImporter>();
-        services.AddSingleton<INoteStore>(sp =>
-        {
-            var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var notePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "notes.json");
-            return new JsonNoteStore(notePath);
-        });
-        services.AddSingleton<ILearningProfileStore>(sp =>
-        {
-            var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var profilePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "learning-profile.json");
-            return new JsonLearningProfileStore(profilePath);
-        });
-        services.AddSingleton<IStudyProgressStore>(sp =>
-        {
-            var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var progressPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "study-progress.json");
-            return new JsonStudyProgressStore(progressPath);
-        });
-        services.AddSingleton<IQuizResultStore>(sp =>
-        {
-            var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var quizPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "quiz-results.json");
-            return new JsonQuizResultStore(quizPath);
-        });
-        services.AddSingleton<IQuizSessionStore>(sp =>
-        {
-            var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-            var quizPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "quiz-sessions.json");
-            return new JsonQuizSessionStore(quizPath);
-        });
-        services.AddScoped<IConversationMemory>(_ => new ConversationMemory(maxNonSystemMessages: 40));
+        services.AddScoped<IVectorStore, ProjectVectorStore>();
+        services.AddScoped(sp => new KnowledgeIndexer(
+            sp.GetRequiredService<IEmbeddingClient>(),
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<IRagRuntimeContext>(),
+            sp.GetRequiredService<ILogger<KnowledgeIndexer>>()));
+        services.AddScoped(sp => new KnowledgeSearchService(
+            sp.GetRequiredService<IEmbeddingClient>(),
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<IRagRuntimeContext>()));
+        services.AddScoped(sp => new CourseMaterialCatalog(
+            sp.GetRequiredService<IRagRuntimeContext>()));
+        services.AddScoped(sp => new CourseMaterialImporter(
+            sp.GetRequiredService<KnowledgeIndexer>(),
+            sp.GetRequiredService<IRagRuntimeContext>(),
+            sp.GetRequiredService<ILogger<CourseMaterialImporter>>()));
+        services.AddScoped<INoteStore, ProjectNoteStore>();
+        services.AddScoped<ILearningProfileStore, ProjectLearningProfileStore>();
+        services.AddScoped<IStudyProgressStore, ProjectStudyProgressStore>();
+        services.AddScoped<IQuizResultStore, ProjectQuizResultStore>();
+        services.AddScoped<IQuizSessionStore, ProjectQuizSessionStore>();
+        services.AddScoped<IConversationMemory, ProjectConversationMemory>();
 
         services.AddScoped<ITool, KnowledgeSearchTool>();
-        services.AddScoped<ITool, ReadCourseMaterialTool>();
+        services.AddScoped<ITool>(sp => new ReadCourseMaterialTool(
+            sp.GetRequiredService<IVectorStore>(),
+            sp.GetRequiredService<IRagRuntimeContext>()));
         services.AddScoped<ITool, ImportCourseMaterialsTool>();
         services.AddScoped<ITool, AddNoteTool>();
         services.AddScoped<ITool, ListNotesTool>();
@@ -83,6 +74,8 @@ public static class SmartStudyWebHostExtensions
         services.AddScoped<ITool, CalculatorTool>();
         services.AddScoped<ITool, MakeQuizTool>();
         services.AddScoped<ToolRegistry>();
+        services.AddScoped<WebChatCommandService>();
+        services.AddScoped<MultiAgentOrchestrator>();
         services.AddScoped<AnswerQualityReviewer>();
         services.AddScoped<PlanExecuteAgent>();
 

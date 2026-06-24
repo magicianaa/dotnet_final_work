@@ -3,8 +3,12 @@
 @inject ReActAgent Agent
 @inject PlanExecuteAgent PlanExecute
 @inject KnowledgeIndexer Indexer
+@inject CourseMaterialImporter Importer
 @inject DashboardStateService Dashboard
 @inject WebAgentTraceStore TraceStore
+@inject WebChatCommandService Commands
+@inject LearningProjectService Projects
+@inject IConversationMemory Memory
 @implements IDisposable
 
 <PageTitle>SmartStudy Agent</PageTitle>
@@ -29,6 +33,17 @@
     <MetricsDashboard State="state" />
 
     <section class="main-grid">
+        <ProjectSidebar Workspace="workspaceState"
+                        @bind-ProjectDirectory="newProjectDirectory"
+                        @bind-ProjectName="newProjectName"
+                        Message="@projectMessage"
+                        IsBusy="isBusy"
+                        OnCreateProject="CreateProjectAsync"
+                        OnSelectProject="SelectProjectAsync"
+                        OnCreateConversation="CreateConversationAsync"
+                        OnSelectConversation="SelectConversationAsync"
+                        OnRefresh="LoadWorkspaceAsync" />
+
         <div class="conversation-panel">
             @if (isPlanMode)
             {
@@ -67,9 +82,13 @@
 
 @code {
     private DashboardState? state;
+    private LearningWorkspaceState? workspaceState;
     private string question = "";
     private string planGoal = "解释 ReAct Agent";
     private string statusMessage = "";
+    private string projectMessage = "";
+    private string newProjectDirectory = "";
+    private string newProjectName = "";
     private bool isBusy;
     private bool useStreaming = true;
     private bool isPlanMode = false;
@@ -88,25 +107,28 @@
     ];
     private readonly CommandHint[] commandHints =
     [
-        new(":reset", "清空对话记忆", "请忽略当前上下文，重新开始一次新的学习对话。"),
-        new(":models", "查看模型列表", "请说明当前可用的 LLM profiles，以及当前模型是哪一个。"),
-        new(":multi <goal>", "启动 Multi-Agent 协作", "请用 Multi-Agent 协作方式帮我准备 Agent 项目答辩。"),
-        new(":plan-execute <goal>", "启动 Plan-and-Execute", "请用 Plan-and-Execute 方式解释 ReAct Agent，并展示质量检查结果。"),
-        new(":search <query>", "调用 knowledge_search", "请检索课程知识库，查询 ReAct Agent 的工作流。"),
-        new(":profile", "查看学习画像", "请查看我当前的学习画像。"),
-        new(":plan <goal>", "调用 study_plan", "请基于我的学习画像制定一个 3 天期末答辩复习计划。"),
-        new(":progress", "调用 show_progress", "请查看我的学习任务进度和完成历史。"),
-        new(":quiz <material> | <count>", "调用 make_quiz", "请基于课程资料生成 3 道关于 Agent Loop 的练习题。"),
-        new(":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer", "我想提交练习题答案，请引导我按 quizId、题号和答案作答。"),
-        new(":mistakes [topic]", "调用 show_mistakes", "请查看我的错题记录，并按主题总结需要复习的地方。"),
-        new(":calc <expression>", "调用 calculate", "请计算 (45+15)/6。"),
-        new(":import <directory> | <glob>", "调用 import_course_materials", "请导入指定目录下的课程资料，并重建知识库索引。")
+        new(":reset", "清空对话记忆", ":reset"),
+        new(":models", "查看模型列表", ":models"),
+        new(":multi <goal>", "启动 Multi-Agent 协作", ":multi 帮我准备 Agent 项目答辩"),
+        new(":plan-execute <goal>", "启动 Plan-and-Execute", ":plan-execute 解释 ReAct Agent，并展示质量检查结果"),
+        new(":search <query>", "调用 knowledge_search", ":search ReAct Agent 的工作流"),
+        new(":profile", "查看学习画像", ":profile"),
+        new(":plan <goal>", "调用 study_plan", ":plan 制定一个 3 天期末答辩复习计划"),
+        new(":progress", "调用 show_progress", ":progress"),
+        new(":quiz <material> | <count>", "调用 make_quiz", ":quiz Agent Loop | 3"),
+        new(":answer <quizId> | <number> | <answer> | <topic>", "调用 submit_quiz_answer", ":answer latest | 1 | A | Agent Loop"),
+        new(":mistakes [topic]", "调用 show_mistakes", ":mistakes"),
+        new(":calc <expression>", "调用 calculate", ":calc (45+15)/6"),
+        new(":import <directory> | <glob>", "调用 import_course_materials", ":import C:\\Users\\21125\\Desktop\\SEM & SEP\\ppts")
     ];
 
     protected override async Task OnInitializedAsync()
     {
         TraceStore.Changed += HandleTraceChanged;
+        Projects.Changed += HandleProjectChanged;
+        await LoadWorkspaceAsync();
         await LoadDashboardAsync();
+        RestoreMessagesFromMemory();
     }
 
     private void TogglePlanMode()
@@ -119,6 +141,11 @@
         state = await Dashboard.GetAsync();
     }
 
+    private async Task LoadWorkspaceAsync()
+    {
+        workspaceState = await Projects.GetStateAsync();
+    }
+
     private async Task BuildIndexAsync()
     {
         isBusy = true;
@@ -127,6 +154,7 @@
         {
             await Indexer.BuildAsync();
             statusMessage = "知识库索引已重建。";
+            projectMessage = $"已重建 {Projects.CurrentProject.Name} 的项目索引。";
             await LoadDashboardAsync();
         }
         catch (Exception ex)
@@ -152,7 +180,21 @@
 
         try
         {
-            if (useStreaming)
+            var commandResult = await Commands.TryExecuteAsync(input, useStreaming);
+            if (commandResult.Handled)
+            {
+                messages.Add(new ChatUiMessage("agent", "SmartStudy", commandResult.Response));
+                statusMessage = commandResult.StatusMessage;
+                if (commandResult.UseStreaming.HasValue)
+                {
+                    useStreaming = commandResult.UseStreaming.Value;
+                }
+                if (commandResult.RefreshDashboard)
+                {
+                    await LoadDashboardAsync();
+                }
+            }
+            else if (useStreaming)
             {
                 await AskStreamingAsync(input);
             }
@@ -163,6 +205,8 @@
                 statusMessage = result.ReachedLimit ? "已达到最大推理步数。" : $"完成，共 {result.Steps} 步。";
             }
             await LoadDashboardAsync();
+            await Projects.TouchConversationAsync(input);
+            await LoadWorkspaceAsync();
         }
         catch (Exception ex)
         {
@@ -268,13 +312,103 @@
     private void ClearChat()
     {
         messages.Clear();
+        Memory.Reset();
         TraceStore.Clear();
         statusMessage = "";
+    }
+
+    private async Task CreateProjectAsync()
+    {
+        if (isBusy || string.IsNullOrWhiteSpace(newProjectDirectory)) return;
+
+        isBusy = true;
+        projectMessage = "正在创建学习项目并导入资料...";
+        try
+        {
+            var project = await Projects.CreateProjectAsync(newProjectDirectory, newProjectName);
+            var result = await Importer.ImportAsync(newProjectDirectory);
+            projectMessage = $"项目 {project.Name} 已创建，导入 {result.FilesRead} 个文件，索引 {result.ChunksIndexed} 个片段。";
+            newProjectDirectory = "";
+            newProjectName = "";
+            ResetConversationUi();
+            await LoadWorkspaceAsync();
+            await LoadDashboardAsync();
+        }
+        catch (Exception ex)
+        {
+            projectMessage = $"创建项目失败：{ex.Message}";
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private async Task SelectProjectAsync(string projectId)
+    {
+        if (isBusy) return;
+        await Projects.SelectProjectAsync(projectId);
+        ResetConversationUi();
+        RestoreMessagesFromMemory();
+        await LoadWorkspaceAsync();
+        await LoadDashboardAsync();
+        projectMessage = $"已切换到项目：{Projects.CurrentProject.Name}";
+    }
+
+    private async Task CreateConversationAsync()
+    {
+        if (isBusy) return;
+        await Projects.CreateConversationAsync();
+        ResetConversationUi();
+        RestoreMessagesFromMemory();
+        await LoadWorkspaceAsync();
+        await LoadDashboardAsync();
+        projectMessage = $"已新建对话：{Projects.CurrentConversation.Title}";
+    }
+
+    private async Task SelectConversationAsync(string conversationId)
+    {
+        if (isBusy) return;
+        await Projects.SelectConversationAsync(conversationId);
+        ResetConversationUi();
+        RestoreMessagesFromMemory();
+        await LoadWorkspaceAsync();
+        await LoadDashboardAsync();
+        projectMessage = $"已切换到对话：{Projects.CurrentConversation.Title}";
     }
 
     private void HandleTraceChanged()
     {
         _ = InvokeAsync(StateHasChanged);
+    }
+
+    private void HandleProjectChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await LoadWorkspaceAsync();
+            await LoadDashboardAsync();
+            StateHasChanged();
+        });
+    }
+
+    private void ResetConversationUi()
+    {
+        messages.Clear();
+        TraceStore.Clear();
+        statusMessage = "";
+    }
+
+    private void RestoreMessagesFromMemory()
+    {
+        messages.Clear();
+        foreach (var msg in Memory.Messages.Where(m => m.Role is ChatRoles.User or ChatRoles.Assistant))
+        {
+            if (string.IsNullOrWhiteSpace(msg.Content)) continue;
+            messages.Add(msg.Role == ChatRoles.User
+                ? new ChatUiMessage("user", "你", msg.Content)
+                : new ChatUiMessage("agent", "SmartStudy", msg.Content));
+        }
     }
 
     private static IReadOnlyList<TimelineItem> BuildTimelineItems(IReadOnlyList<AgentEvent> events)
@@ -331,5 +465,6 @@
     public void Dispose()
     {
         TraceStore.Changed -= HandleTraceChanged;
+        Projects.Changed -= HandleProjectChanged;
     }
 }

@@ -1,0 +1,84 @@
+<aside class="project-sidebar">
+    <div class="sidebar-section">
+        <div class="sidebar-heading">
+            <div>
+                <span>学习项目</span>
+                <strong>@(Workspace?.CurrentProject.Name ?? "加载中")</strong>
+            </div>
+            <button class="icon-button compact" title="刷新项目" @onclick="OnRefresh">↻</button>
+        </div>
+
+        <div class="project-create">
+            <input value="@ProjectDirectory"
+                   @oninput="e => ProjectDirectoryChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)"
+                   placeholder="选择或粘贴资料文件夹路径" />
+            <input value="@ProjectName"
+                   @oninput="e => ProjectNameChanged.InvokeAsync(e.Value?.ToString() ?? string.Empty)"
+                   placeholder="项目名，可选" />
+            <button class="primary-button" disabled="@(IsBusy || string.IsNullOrWhiteSpace(ProjectDirectory))" @onclick="OnCreateProject">
+                新建项目
+            </button>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Message))
+        {
+            <p class="sidebar-message">@Message</p>
+        }
+    </div>
+
+    <div class="sidebar-section project-list">
+        @foreach (var project in Workspace?.Projects ?? Array.Empty<LearningProject>())
+        {
+            <button class="project-item @(project.Id == Workspace?.CurrentProject.Id ? "active" : "")"
+                    disabled="@IsBusy"
+                    @onclick="() => OnSelectProject.InvokeAsync(project.Id)">
+                <strong>@project.Name</strong>
+                <span>@ShortPath(project.SourceDirectory)</span>
+            </button>
+        }
+    </div>
+
+    <div class="sidebar-section">
+        <div class="sidebar-heading">
+            <div>
+                <span>学习对话</span>
+                <strong>@(Workspace?.Conversations.Count.ToString() ?? "0") 个会话</strong>
+            </div>
+            <button class="icon-button compact" title="新建对话" disabled="@IsBusy" @onclick="OnCreateConversation">＋</button>
+        </div>
+
+        <div class="conversation-list">
+            @foreach (var conversation in Workspace?.Conversations ?? Array.Empty<LearningConversation>())
+            {
+                <button class="conversation-item @(conversation.Id == Workspace?.CurrentConversation.Id ? "active" : "")"
+                        disabled="@IsBusy"
+                        @onclick="() => OnSelectConversation.InvokeAsync(conversation.Id)">
+                    <strong>@conversation.Title</strong>
+                    <span>@conversation.UpdatedAt.ToString("MM-dd HH:mm")</span>
+                </button>
+            }
+        </div>
+    </div>
+</aside>
+
+@code {
+    [Parameter] public LearningWorkspaceState? Workspace { get; set; }
+    [Parameter] public string ProjectDirectory { get; set; } = "";
+    [Parameter] public EventCallback<string> ProjectDirectoryChanged { get; set; }
+    [Parameter] public string ProjectName { get; set; } = "";
+    [Parameter] public EventCallback<string> ProjectNameChanged { get; set; }
+    [Parameter] public string Message { get; set; } = "";
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public EventCallback OnCreateProject { get; set; }
+    [Parameter] public EventCallback<string> OnSelectProject { get; set; }
+    [Parameter] public EventCallback OnCreateConversation { get; set; }
+    [Parameter] public EventCallback<string> OnSelectConversation { get; set; }
+    [Parameter] public EventCallback OnRefresh { get; set; }
+
+    private static string ShortPath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return "未绑定目录";
+        var fileName = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        return string.IsNullOrWhiteSpace(fileName) ? path : fileName;
+    }
+}

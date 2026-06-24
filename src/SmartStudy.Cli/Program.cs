@@ -13,6 +13,7 @@ using SmartStudy.Core.Rag;
 using SmartStudy.Core.Tools;
 using SmartStudy.Core.Tools.Builtin;
 using SmartStudy.Core.Tracing;
+using SmartStudy.Core.Workspace;
 using Spectre.Console;
 
 // 固定运行目录到可执行文件目录，确保 appsettings.json、knowledge/ 和 data/ 的相对路径
@@ -28,6 +29,8 @@ host.Configuration
 
 host.Services.Configure<AgentOptions>(host.Configuration.GetSection("Agent"));
 host.Services.AddSingleton<LlmProfileManager>();
+host.Services.AddSingleton<LearningProjectService>();
+host.Services.AddSingleton<IRagRuntimeContext>(sp => sp.GetRequiredService<LearningProjectService>());
 
 host.Services.AddHttpClient<ILlmClient, OpenAiLlmClient>();
 host.Services.AddHttpClient<ZhipuEmbeddingClient>();
@@ -40,46 +43,34 @@ host.Services.AddSingleton<IEmbeddingClient>(sp =>
         : sp.GetRequiredService<ZhipuEmbeddingClient>();
 });
 
-host.Services.AddSingleton<IVectorStore, JsonPersistentVectorStore>();
-host.Services.AddSingleton<KnowledgeIndexer>();
-host.Services.AddSingleton<KnowledgeSearchService>();
-host.Services.AddSingleton<CourseMaterialCatalog>();
-host.Services.AddSingleton<CourseMaterialImporter>();
-host.Services.AddSingleton<INoteStore>(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-    var notePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "notes.json");
-    return new JsonNoteStore(notePath);
-});
-host.Services.AddSingleton<ILearningProfileStore>(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-    var profilePath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "learning-profile.json");
-    return new JsonLearningProfileStore(profilePath);
-});
-host.Services.AddSingleton<IStudyProgressStore>(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-    var progressPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "study-progress.json");
-    return new JsonStudyProgressStore(progressPath);
-});
-host.Services.AddSingleton<IQuizResultStore>(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-    var quizPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "quiz-results.json");
-    return new JsonQuizResultStore(quizPath);
-});
-host.Services.AddSingleton<IQuizSessionStore>(sp =>
-{
-    var opts = sp.GetRequiredService<IOptions<AgentOptions>>().Value;
-    var quizPath = Path.Combine(Path.GetDirectoryName(opts.Rag.IndexFile) ?? "data", "quiz-sessions.json");
-    return new JsonQuizSessionStore(quizPath);
-});
-host.Services.AddSingleton<IConversationMemory>(_ => new ConversationMemory(maxNonSystemMessages: 40));
+host.Services.AddSingleton<IVectorStore, ProjectVectorStore>();
+host.Services.AddSingleton(sp => new KnowledgeIndexer(
+    sp.GetRequiredService<IEmbeddingClient>(),
+    sp.GetRequiredService<IVectorStore>(),
+    sp.GetRequiredService<IRagRuntimeContext>(),
+    sp.GetRequiredService<ILogger<KnowledgeIndexer>>()));
+host.Services.AddSingleton(sp => new KnowledgeSearchService(
+    sp.GetRequiredService<IEmbeddingClient>(),
+    sp.GetRequiredService<IVectorStore>(),
+    sp.GetRequiredService<IRagRuntimeContext>()));
+host.Services.AddSingleton(sp => new CourseMaterialCatalog(
+    sp.GetRequiredService<IRagRuntimeContext>()));
+host.Services.AddSingleton(sp => new CourseMaterialImporter(
+    sp.GetRequiredService<KnowledgeIndexer>(),
+    sp.GetRequiredService<IRagRuntimeContext>(),
+    sp.GetRequiredService<ILogger<CourseMaterialImporter>>()));
+host.Services.AddSingleton<INoteStore, ProjectNoteStore>();
+host.Services.AddSingleton<ILearningProfileStore, ProjectLearningProfileStore>();
+host.Services.AddSingleton<IStudyProgressStore, ProjectStudyProgressStore>();
+host.Services.AddSingleton<IQuizResultStore, ProjectQuizResultStore>();
+host.Services.AddSingleton<IQuizSessionStore, ProjectQuizSessionStore>();
+host.Services.AddSingleton<IConversationMemory, ProjectConversationMemory>();
 
 // Agent 工具
 host.Services.AddSingleton<ITool, KnowledgeSearchTool>();
-host.Services.AddSingleton<ITool, ReadCourseMaterialTool>();
+host.Services.AddSingleton<ITool>(sp => new ReadCourseMaterialTool(
+    sp.GetRequiredService<IVectorStore>(),
+    sp.GetRequiredService<IRagRuntimeContext>()));
 host.Services.AddSingleton<ITool, ImportCourseMaterialsTool>();
 host.Services.AddSingleton<ITool, AddNoteTool>();
 host.Services.AddSingleton<ITool, ListNotesTool>();
@@ -135,6 +126,15 @@ switch (cmd)
     case "tools":
         await RunTools(app.Services);
         break;
+    case "project":
+    case "projects":
+        await RunProjectCommand(app.Services, args.Skip(1).ToArray());
+        break;
+    case "conversation":
+    case "conversations":
+    case "conv":
+        await RunConversationCommand(app.Services, args.Skip(1).ToArray());
+        break;
     case "multi":
     case "multi-agent":
         var goal = string.Join(' ', args.Skip(1));
@@ -181,6 +181,8 @@ static async Task RunIndex(IServiceProvider sp)
 {
     var indexer = sp.GetRequiredService<KnowledgeIndexer>();
     var embedding = sp.GetRequiredService<IOptions<AgentOptions>>().Value.Embedding;
+    var project = sp.GetRequiredService<LearningProjectService>().CurrentProject;
+    AnsiConsole.MarkupLine($"[dim]Project: {Markup.Escape(project.Name)} ({Markup.Escape(project.Id)})[/]");
     AnsiConsole.MarkupLine($"[dim]Embedding Provider: {Markup.Escape(embedding.Provider)}[/]");
     try
     {
@@ -209,9 +211,12 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
 
     var agent = sp.GetRequiredService<ReActAgent>();
     var profiles = sp.GetRequiredService<LlmProfileManager>();
+    var projects = sp.GetRequiredService<LearningProjectService>();
+    var workspace = await projects.GetStateAsync();
 
     AnsiConsole.Write(new Rule("[bold cyan]SmartStudy AI 学习助手[/]").RuleStyle("grey"));
-    AnsiConsole.MarkupLine($"[dim]输入问题与 Agent 对话；常用指令：:q 退出，:stream 切换流式，:multi <目标> 多 Agent 协作，:help 显示全部冒号指令。当前 LLM: {Markup.Escape(profiles.CurrentName)} ({Markup.Escape(profiles.Current.Model)})[/]");
+    AnsiConsole.MarkupLine($"[dim]输入问题与 Agent 对话；常用指令：:q 退出，:stream 切换流式，:project new <目录> | <名称> 新建项目，:conversation new <标题> 新建对话，:help 显示全部冒号指令。当前 LLM: {Markup.Escape(profiles.CurrentName)} ({Markup.Escape(profiles.Current.Model)})[/]");
+    AnsiConsole.MarkupLine($"[dim]当前项目：{Markup.Escape(workspace.CurrentProject.Name)}；当前对话：{Markup.Escape(workspace.CurrentConversation.Title)}[/]");
 
     while (true)
     {
@@ -222,6 +227,8 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
         if (input == ":stream") { useStreaming = !useStreaming; AnsiConsole.MarkupLine($"[green]流式输出 = {useStreaming}[/]"); continue; }
         if (input == ":models") { PrintModelProfiles(profiles); continue; }
         if (input is ":help" or ":commands") { PrintChatCommands(); continue; }
+        if (await TryRunWorkspaceCommand(sp, input))
+            continue;
         if (TryReadPlanExecuteCommand(input, out var planGoal))
         {
             if (string.IsNullOrWhiteSpace(planGoal))
@@ -272,6 +279,7 @@ static async Task RunChat(IServiceProvider sp, bool useStreaming)
                 if (result.ReachedLimit)
                     AnsiConsole.MarkupLine("[yellow]⚠ 达到最大循环步数[/]");
             }
+            await projects.TouchConversationAsync(input);
         }
         catch (Exception ex)
         {
@@ -332,6 +340,68 @@ static async Task RunTools(IServiceProvider sp)
     foreach (var tool in snapshot.Tools)
         table.AddRow(Markup.Escape(tool.Name), Markup.Escape(tool.Description));
     AnsiConsole.Write(table);
+}
+
+static async Task RunProjectCommand(IServiceProvider sp, string[] args)
+{
+    var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "list";
+    var rest = args.Skip(1).ToArray();
+
+    switch (command)
+    {
+        case "list":
+        case "ls":
+            await PrintProjects(sp);
+            break;
+        case "current":
+        case "show":
+            await PrintCurrentWorkspace(sp);
+            break;
+        case "new":
+        case "create":
+        case "add":
+            await CreateProjectFromArgs(sp, rest);
+            break;
+        case "switch":
+        case "select":
+        case "use":
+            await SwitchProjectFromArgs(sp, rest);
+            break;
+        default:
+            AnsiConsole.MarkupLine("[yellow]用法：project list | project current | project new <目录> [| 名称] | project switch <项目ID或名称>[/]");
+            break;
+    }
+}
+
+static async Task RunConversationCommand(IServiceProvider sp, string[] args)
+{
+    var command = args.FirstOrDefault()?.ToLowerInvariant() ?? "list";
+    var rest = args.Skip(1).ToArray();
+
+    switch (command)
+    {
+        case "list":
+        case "ls":
+            await PrintConversations(sp);
+            break;
+        case "current":
+        case "show":
+            await PrintCurrentWorkspace(sp);
+            break;
+        case "new":
+        case "create":
+        case "add":
+            await CreateConversationFromArgs(sp, rest);
+            break;
+        case "switch":
+        case "select":
+        case "use":
+            await SwitchConversationFromArgs(sp, rest);
+            break;
+        default:
+            AnsiConsole.MarkupLine("[yellow]用法：conversation list | conversation current | conversation new [标题] | conversation switch <对话ID或标题>[/]");
+            break;
+    }
 }
 
 static async Task RunMultiAgent(IServiceProvider sp, string goal)
@@ -470,6 +540,13 @@ static void PrintChatCommands()
     AddCommandRow(table, ":stream", "切换流式输出");
     AddCommandRow(table, ":models", "查看模型列表");
     AddCommandRow(table, ":model <name>", "切换模型");
+    AddCommandRow(table, ":projects", "列出学习项目");
+    AddCommandRow(table, ":project current", "查看当前项目和对话");
+    AddCommandRow(table, ":project new <目录> | <名称>", "新建学习项目并导入资料");
+    AddCommandRow(table, ":project switch <项目ID或名称>", "切换学习项目");
+    AddCommandRow(table, ":conversations", "列出当前项目下的学习对话");
+    AddCommandRow(table, ":conversation new <标题>", "新建学习对话");
+    AddCommandRow(table, ":conversation switch <对话ID或标题>", "切换学习对话");
     AddCommandRow(table, ":multi <goal>", "启动 Multi-Agent 协作");
     AddCommandRow(table, ":plan-execute <goal>", "启动 Plan-and-Execute 并做答案质量检查");
     AddCommandRow(table, ":search <query>", "调用 knowledge_search");
@@ -579,6 +656,230 @@ static async Task<bool> TryRunToolCommand(IServiceProvider sp, string input)
     }
 
     return true;
+}
+
+static async Task<bool> TryRunWorkspaceCommand(IServiceProvider sp, string input)
+{
+    if (!input.StartsWith(':')) return false;
+
+    var normalized = input.Trim();
+    var space = normalized.IndexOf(' ');
+    var command = (space < 0 ? normalized : normalized[..space]).ToLowerInvariant();
+    var rest = space < 0 ? "" : normalized[(space + 1)..].Trim();
+
+    switch (command)
+    {
+        case ":projects":
+            await PrintProjects(sp);
+            return true;
+        case ":project":
+            await RunProjectCommand(sp, SplitWorkspaceArgs(rest));
+            return true;
+        case ":project-current":
+            await PrintCurrentWorkspace(sp);
+            return true;
+        case ":project-new":
+            await CreateProjectFromText(sp, rest);
+            return true;
+        case ":project-switch":
+            await SwitchProjectFromText(sp, rest);
+            return true;
+        case ":conversations":
+        case ":convs":
+            await PrintConversations(sp);
+            return true;
+        case ":conversation":
+        case ":conv":
+            await RunConversationCommand(sp, SplitWorkspaceArgs(rest));
+            return true;
+        case ":conversation-current":
+        case ":conv-current":
+            await PrintCurrentWorkspace(sp);
+            return true;
+        case ":conversation-new":
+        case ":conv-new":
+            await CreateConversationFromText(sp, rest);
+            return true;
+        case ":conversation-switch":
+        case ":conv-switch":
+            await SwitchConversationFromText(sp, rest);
+            return true;
+    }
+
+    return false;
+}
+
+static string[] SplitWorkspaceArgs(string rest)
+{
+    if (string.IsNullOrWhiteSpace(rest)) return Array.Empty<string>();
+    var firstSpace = rest.IndexOf(' ');
+    if (firstSpace < 0) return new[] { rest };
+    return new[] { rest[..firstSpace], rest[(firstSpace + 1)..].Trim() };
+}
+
+static async Task PrintCurrentWorkspace(IServiceProvider sp)
+{
+    var state = await sp.GetRequiredService<LearningProjectService>().GetStateAsync();
+    AnsiConsole.MarkupLine($"[green]当前项目[/] {Markup.Escape(state.CurrentProject.Name)} [dim]({Markup.Escape(state.CurrentProject.Id)})[/]");
+    AnsiConsole.MarkupLine($"[green]资料目录[/] {Markup.Escape(state.CurrentProject.SourceDirectory)}");
+    AnsiConsole.MarkupLine($"[green]当前对话[/] {Markup.Escape(state.CurrentConversation.Title)} [dim]({Markup.Escape(state.CurrentConversation.Id)})[/]");
+}
+
+static async Task PrintProjects(IServiceProvider sp)
+{
+    var state = await sp.GetRequiredService<LearningProjectService>().GetStateAsync();
+    var table = new Table().RoundedBorder();
+    table.AddColumn("Active");
+    table.AddColumn("Id");
+    table.AddColumn("Name");
+    table.AddColumn("Directory");
+    table.AddColumn("Updated");
+
+    foreach (var project in state.Projects)
+    {
+        table.AddRow(
+            project.Id == state.CurrentProject.Id ? "[green]*[/]" : "",
+            Markup.Escape(project.Id),
+            Markup.Escape(project.Name),
+            Markup.Escape(project.SourceDirectory),
+            project.UpdatedAt.ToString("yyyy-MM-dd HH:mm"));
+    }
+
+    AnsiConsole.Write(table);
+}
+
+static async Task PrintConversations(IServiceProvider sp)
+{
+    var state = await sp.GetRequiredService<LearningProjectService>().GetStateAsync();
+    var table = new Table().RoundedBorder();
+    table.AddColumn("Active");
+    table.AddColumn("Id");
+    table.AddColumn("Title");
+    table.AddColumn("Updated");
+
+    foreach (var conversation in state.Conversations)
+    {
+        table.AddRow(
+            conversation.Id == state.CurrentConversation.Id ? "[green]*[/]" : "",
+            Markup.Escape(conversation.Id),
+            Markup.Escape(conversation.Title),
+            conversation.UpdatedAt.ToString("yyyy-MM-dd HH:mm"));
+    }
+
+    AnsiConsole.Write(new Rule($"[bold cyan]项目：{Markup.Escape(state.CurrentProject.Name)}[/]").RuleStyle("grey"));
+    AnsiConsole.Write(table);
+}
+
+static async Task CreateProjectFromArgs(IServiceProvider sp, string[] args)
+{
+    await CreateProjectFromText(sp, string.Join(' ', args));
+}
+
+static async Task CreateProjectFromText(IServiceProvider sp, string text)
+{
+    var (directory, name) = ParseProjectCreateText(text);
+    if (string.IsNullOrWhiteSpace(directory))
+    {
+        AnsiConsole.MarkupLine("[yellow]用法：project new <目录> [| 项目名][/]\n[dim]示例：project new \"C:\\\\Users\\\\21125\\\\Desktop\\\\SEM & SEP\\\\ppts\" | SEM 课程[/]");
+        return;
+    }
+
+    var projects = sp.GetRequiredService<LearningProjectService>();
+    var importer = sp.GetRequiredService<CourseMaterialImporter>();
+    try
+    {
+        var project = await projects.CreateProjectAsync(directory, name);
+        AnsiConsole.MarkupLine($"[green]已创建并切换到项目：{Markup.Escape(project.Name)} ({Markup.Escape(project.Id)})[/]");
+        var result = await AnsiConsole.Status().StartAsync("导入项目资料并构建项目索引…", async _ => await importer.ImportAsync(directory));
+        AnsiConsole.MarkupLine($"[green]导入完成：{result.FilesRead} 个文件，跳过 {result.FilesSkipped} 个，索引 {result.ChunksIndexed} 个片段。[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]创建项目失败：{Markup.Escape(ex.Message)}[/]");
+    }
+}
+
+static async Task SwitchProjectFromArgs(IServiceProvider sp, string[] args)
+{
+    await SwitchProjectFromText(sp, string.Join(' ', args));
+}
+
+static async Task SwitchProjectFromText(IServiceProvider sp, string text)
+{
+    var project = text.Trim();
+    if (string.IsNullOrWhiteSpace(project))
+    {
+        AnsiConsole.MarkupLine("[yellow]用法：project switch <项目ID或名称>[/]");
+        return;
+    }
+
+    try
+    {
+        var projects = sp.GetRequiredService<LearningProjectService>();
+        await projects.SelectProjectAsync(project);
+        sp.GetRequiredService<IConversationMemory>().Reset();
+        var indexer = sp.GetRequiredService<KnowledgeIndexer>();
+        var loaded = await indexer.LoadIfExistsAsync();
+        var state = await projects.GetStateAsync();
+        AnsiConsole.MarkupLine($"[green]已切换到项目：{Markup.Escape(state.CurrentProject.Name)}；当前对话：{Markup.Escape(state.CurrentConversation.Title)}[/]");
+        AnsiConsole.MarkupLine(loaded
+            ? $"[dim]已加载项目索引，chunks={indexer.Count}[/]"
+            : "[yellow]当前项目尚未建立索引，可运行 `index` 或 `:import <目录>`。[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]切换项目失败：{Markup.Escape(ex.Message)}[/]");
+    }
+}
+
+static async Task CreateConversationFromArgs(IServiceProvider sp, string[] args)
+{
+    await CreateConversationFromText(sp, string.Join(' ', args));
+}
+
+static async Task CreateConversationFromText(IServiceProvider sp, string text)
+{
+    var title = text.Trim();
+    var projects = sp.GetRequiredService<LearningProjectService>();
+    var conversation = await projects.CreateConversationAsync(string.IsNullOrWhiteSpace(title) ? null : title);
+    sp.GetRequiredService<IConversationMemory>().Reset();
+    AnsiConsole.MarkupLine($"[green]已新建并切换到对话：{Markup.Escape(conversation.Title)} ({Markup.Escape(conversation.Id)})[/]");
+}
+
+static async Task SwitchConversationFromArgs(IServiceProvider sp, string[] args)
+{
+    await SwitchConversationFromText(sp, string.Join(' ', args));
+}
+
+static async Task SwitchConversationFromText(IServiceProvider sp, string text)
+{
+    var conversation = text.Trim();
+    if (string.IsNullOrWhiteSpace(conversation))
+    {
+        AnsiConsole.MarkupLine("[yellow]用法：conversation switch <对话ID或标题>[/]");
+        return;
+    }
+
+    try
+    {
+        var projects = sp.GetRequiredService<LearningProjectService>();
+        await projects.SelectConversationAsync(conversation);
+        sp.GetRequiredService<IConversationMemory>().Reset();
+        var state = await projects.GetStateAsync();
+        AnsiConsole.MarkupLine($"[green]已切换到对话：{Markup.Escape(state.CurrentConversation.Title)}[/]");
+    }
+    catch (Exception ex)
+    {
+        AnsiConsole.MarkupLine($"[red]切换对话失败：{Markup.Escape(ex.Message)}[/]");
+    }
+}
+
+static (string Directory, string? Name) ParseProjectCreateText(string text)
+{
+    var parts = text.Split('|', 2, StringSplitOptions.TrimEntries);
+    var directory = parts.Length > 0 ? parts[0].Trim().Trim('"') : "";
+    var name = parts.Length > 1 && !string.IsNullOrWhiteSpace(parts[1]) ? parts[1].Trim() : null;
+    return (directory, name);
 }
 
 static (string ToolName, string ArgumentsJson)? ToolCommand(string toolName, string argumentsJson) =>

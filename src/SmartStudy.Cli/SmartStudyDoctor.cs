@@ -3,6 +3,7 @@ using SmartStudy.Core.Configuration;
 using SmartStudy.Core.Rag;
 using SmartStudy.Core.Tools;
 using SmartStudy.Core.Tools.Builtin;
+using SmartStudy.Core.Workspace;
 
 namespace SmartStudy.Cli;
 
@@ -46,26 +47,36 @@ public sealed class SmartStudyDoctor
     private readonly LlmProfileManager _profiles;
     private readonly IVectorStore _store;
     private readonly ToolRegistry _tools;
+    private readonly IRagRuntimeContext _ragContext;
+    private readonly LearningProjectService _projects;
 
-    public SmartStudyDoctor(IOptions<AgentOptions> options, LlmProfileManager profiles, IVectorStore store, ToolRegistry tools)
+    public SmartStudyDoctor(
+        IOptions<AgentOptions> options,
+        LlmProfileManager profiles,
+        IVectorStore store,
+        ToolRegistry tools,
+        IRagRuntimeContext ragContext,
+        LearningProjectService projects)
     {
         _options = options.Value;
         _profiles = profiles;
         _store = store;
         _tools = tools;
+        _ragContext = ragContext;
+        _projects = projects;
     }
 
     public async Task<SmartStudyDoctorSnapshot> InspectAsync(CancellationToken ct = default)
     {
         var llm = _profiles.Current;
-        var rag = _options.Rag;
+        var rag = _ragContext.Current;
+        var paths = _projects.GetCurrentProjectPaths();
         var embedding = _options.Embedding;
         var knowledgeDir = Path.GetFullPath(rag.KnowledgeDirectory);
         var importedDir = Path.Combine(knowledgeDir, "imported");
         var indexFile = Path.GetFullPath(rag.IndexFile);
-        var dataDir = Path.GetDirectoryName(rag.IndexFile) ?? "data";
-        var notesFile = Path.GetFullPath(Path.Combine(dataDir, "notes.json"));
-        var learningProfileFile = Path.GetFullPath(Path.Combine(dataDir, "learning-profile.json"));
+        var notesFile = Path.GetFullPath(paths.NotesFile);
+        var learningProfileFile = Path.GetFullPath(paths.LearningProfileFile);
 
         var knowledgeExists = Directory.Exists(knowledgeDir);
         var markdownCount = knowledgeExists
